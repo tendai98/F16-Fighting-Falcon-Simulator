@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F-16C Strike Mission Simulator</title>
+
+<!-- ============================================================
+     LINK-PREVIEW META  (WhatsApp / X / Instagram / Facebook / Discord)
+     These scrapers need ABSOLUTE https URLs to a publicly reachable image.
+     >>> Replace  https://YOUR-DOMAIN.example  below with the real URL
+         where you host this build (e.g. https://tendaibhebhe.com/f16).  <<<
+     ============================================================ -->
+<meta name="description" content="Fly a browser-based F-16C Fighting Falcon — full glass cockpit, FCR/SAR radar, targeting pod, CCIP &amp; laser-guided bombs, HARM, E-3/E-2 AWACS datalink and live SAM threats.">
+<meta name="theme-color" content="#19e64b">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="F-16C Strike Mission Simulator">
+<meta property="og:title" content="F-16C Strike Mission Simulator">
+<meta property="og:description" content="Browser F-16C Fighting Falcon: glass cockpit, radar, targeting pod, CCIP &amp; laser-guided bombs, HARM, AWACS datalink and live SAMs.">
+<meta property="og:url" content="https://YOUR-DOMAIN.example/">
+<meta property="og:image" content="https://YOUR-DOMAIN.example/assets/splash.jpg">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1254">
+<meta property="og:image:height" content="1254">
+<meta property="og:image:alt" content="F-16 Fighting Falcon neon wireframe">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="F-16C Strike Mission Simulator">
+<meta name="twitter:description" content="Browser F-16C Fighting Falcon: glass cockpit, radar, targeting pod, CCIP &amp; laser-guided bombs, HARM, AWACS datalink and live SAMs.">
+<meta name="twitter:image" content="https://YOUR-DOMAIN.example/assets/splash.jpg">
+
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+<link rel="icon" type="image/png" sizes="128x128" href="assets/favicon.png">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png">
+
+<link rel="stylesheet" href="css/cockpit.css">
+<link rel="stylesheet" href="css/windscreen.css">
+</head>
+<body>
+
+<!-- ===== SPLASH / LOADING (7s, click to skip) ===== -->
+<div id="splash">
+  <img id="splash-bg-right" src="assets/splash-right.jpg" alt="" aria-hidden="true">
+  <img id="splash-art" src="assets/splash.png" alt="F-16 Fighting Falcon">
+  <div id="splash-load">
+    <div id="splash-bar-wrap"><div id="splash-bar"></div></div>
+    <div id="splash-status">INITIALIZING SYSTEMS&hellip;</div>
+  </div>
+  <div id="splash-foot">F-16C STRIKE MISSION SIMULATOR &middot; click to skip</div>
+</div>
+
+<div class="panel-stack">
+
+  <!-- ===== WIDE OUT-THE-WINDOW + HUD ===== -->
+  <div class="windscreen">
+    <canvas id="window" width="1600" height="600"></canvas>
+    <canvas id="hud"    width="1600" height="600"></canvas>
+    <div class="canopy">
+      <div class="rail left"></div>
+      <div class="rail right"></div>
+      <div class="glare"></div>
+    </div>
+
+  </div>
+
+  <!-- ===== MFD ROW ===== -->
+  <div class="mfd-row">
+    <div class="mfd-frame" data-mfd="left" id="mfd-left">
+      <div class="mfd-name">L</div>
+      <div class="screw tl"></div><div class="screw tr"></div>
+      <div class="screw bl"></div><div class="screw br"></div>
+      <button class="osb top" data-osb="T1"></button><button class="osb top" data-osb="T2"></button><button class="osb top" data-osb="T3"></button><button class="osb top" data-osb="T4"></button><button class="osb top" data-osb="T5"></button>
+      <button class="osb bottom" data-osb="B1"></button><button class="osb bottom" data-osb="B2"></button><button class="osb bottom" data-osb="B3"></button><button class="osb bottom" data-osb="B4"></button><button class="osb bottom" data-osb="B5"></button>
+      <button class="osb left" data-osb="L1"></button><button class="osb left" data-osb="L2"></button><button class="osb left" data-osb="L3"></button><button class="osb left" data-osb="L4"></button><button class="osb left" data-osb="L5"></button>
+      <button class="osb right" data-osb="R1"></button><button class="osb right" data-osb="R2"></button><button class="osb right" data-osb="R3"></button><button class="osb right" data-osb="R4"></button><button class="osb right" data-osb="R5"></button>
+      <div class="mfd-screen"><canvas width="340" height="340"></canvas><div class="scanlines"></div><div class="crt-glow"></div><div class="flicker"></div></div>
+    </div>
+
+    <div class="mfd-frame active" data-mfd="center" id="mfd-center">
+      <div class="mfd-name">C</div>
+      <div class="screw tl"></div><div class="screw tr"></div>
+      <div class="screw bl"></div><div class="screw br"></div>
+      <button class="osb top" data-osb="T1"></button><button class="osb top" data-osb="T2"></button><button class="osb top" data-osb="T3"></button><button class="osb top" data-osb="T4"></button><button class="osb top" data-osb="T5"></button>
+      <button class="osb bottom" data-osb="B1"></button><button class="osb bottom" data-osb="B2"></button><button class="osb bottom" data-osb="B3"></button><button class="osb bottom" data-osb="B4"></button><button class="osb bottom" data-osb="B5"></button>
+      <button class="osb left" data-osb="L1"></button><button class="osb left" data-osb="L2"></button><button class="osb left" data-osb="L3"></button><button class="osb left" data-osb="L4"></button><button class="osb left" data-osb="L5"></button>
+      <button class="osb right" data-osb="R1"></button><button class="osb right" data-osb="R2"></button><button class="osb right" data-osb="R3"></button><button class="osb right" data-osb="R4"></button><button class="osb right" data-osb="R5"></button>
+      <div class="mfd-screen"><canvas width="340" height="340"></canvas><div class="scanlines"></div><div class="crt-glow"></div><div class="flicker"></div></div>
+    </div>
+
+    <div class="mfd-frame" data-mfd="right" id="mfd-right">
+      <div class="mfd-name">R</div>
+      <div class="screw tl"></div><div class="screw tr"></div>
+      <div class="screw bl"></div><div class="screw br"></div>
+      <button class="osb top" data-osb="T1"></button><button class="osb top" data-osb="T2"></button><button class="osb top" data-osb="T3"></button><button class="osb top" data-osb="T4"></button><button class="osb top" data-osb="T5"></button>
+      <button class="osb bottom" data-osb="B1"></button><button class="osb bottom" data-osb="B2"></button><button class="osb bottom" data-osb="B3"></button><button class="osb bottom" data-osb="B4"></button><button class="osb bottom" data-osb="B5"></button>
+      <button class="osb left" data-osb="L1"></button><button class="osb left" data-osb="L2"></button><button class="osb left" data-osb="L3"></button><button class="osb left" data-osb="L4"></button><button class="osb left" data-osb="L5"></button>
+      <button class="osb right" data-osb="R1"></button><button class="osb right" data-osb="R2"></button><button class="osb right" data-osb="R3"></button><button class="osb right" data-osb="R4"></button><button class="osb right" data-osb="R5"></button>
+      <div class="mfd-screen"><canvas width="340" height="340"></canvas><div class="scanlines"></div><div class="crt-glow"></div><div class="flicker"></div></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="js/tone.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/config.js"></script>
+<script src="js/core.js"></script>
+<script src="js/render3d.js"></script>
+<script src="js/hud_weapons.js"></script>
+<script src="js/flighthud.js"></script>
+<script src="js/mfd.js"></script>
+<script src="js/main.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,1290 @@
+/* =====================================================================
+   MFD  —  multifunction displays, live-wired to the world
+   ===================================================================== */
+const C_GREEN='#27ff5e', C_DIM='rgba(39,255,94,0.45)', C_HOT='#a8ffc0',
+      C_RED='#ff5b5b', C_YEL='#ffd24d', C_ORG='#ff9a4d';
+
+let F16IMG = new Image();
+let F16IMG_OK = false;
+F16IMG.onload = ()=>{ F16IMG_OK = true; };
+F16IMG.src = (typeof F16_SILHOUETTE_SRC!=='undefined') ? F16_SILHOUETTE_SRC : '';
+
+class MFD {
+  constructor(id, frameEl, page){
+    this.id=id; this.frame=frameEl;
+    this.canvas=frameEl.querySelector('canvas');
+    this.ctx=this.canvas.getContext('2d');
+    this.W=this.canvas.width; this.H=this.canvas.height;
+    this.page=page; this.range=20; this.azScan=60;
+    this.sweep=-60; this.sweepDir=1; this.sweepSpeed=80;
+    this.locked=null;
+    this.fcrMode='RWS';      // RWS (air-to-air) | SAR (ground map)
+    this.tgpFov='WIDE';      // WIDE | NARO
+    this.tgpZoom=2;          // 1..4 zoom stage (drives FOV)
+    this.tgpTrack='AREA';    // AREA | POINT
+    this.tgpPol='WHOT';      // WHOT (white-hot) | BHOT (black-hot)
+    this.laser=false;        // TGP laser armed
+    this.osbEls={};
+    frameEl.querySelectorAll('.osb').forEach(b=>{
+      this.osbEls[b.dataset.osb]=b;
+      b.addEventListener('click',e=>{ e.stopPropagation(); this.osb(b.dataset.osb); world.activeMfdId=this.id; setActive(); });
+    });
+    this.canvas.addEventListener('click', e=>{
+      world.activeMfdId=this.id; setActive();
+      const r=this.canvas.getBoundingClientRect();
+      const x=(e.clientX-r.left)*(this.W/r.width), y=(e.clientY-r.top)*(this.H/r.height);
+      if (this.page==='FCR') this.tryLock(x,y);
+      else if (this.page==='THR') this.thrTap(x,y);
+      else if (this.page==='ECM') this.ecmTap(x,y);
+      else if (this.page==='DED' && DED_PAGE==='TUNE') this.dedTap(x,y);
+    });
+    this.refresh();
+  }
+  setPage(p){ this.page=p; this.refresh(); }
+  setRange(r){ this.range=r; this.refresh(); }
+
+  osb(k){
+    const pg={T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED'};
+    if (pg[k]){ this.setPage(pg[k]); return; }
+    if (this.page==='FCR'){
+      const rm={L1:10,L2:20,L3:40,L4:80};
+      if (rm[k]){ this.setRange(rm[k]); return; }
+      if (k==='B1'){ const o=['RWS','SAR','HAD']; this.fcrMode=o[(o.indexOf(this.fcrMode)+1)%o.length]; this.locked=null; this.refresh(); return; }
+    }
+    if (this.page==='HSD'){
+      const rm={L1:10,L2:20,L3:40,L4:80};
+      if (rm[k]){ this.setRange(rm[k]); return; }
+      if (k==='B4'){ this.setPage('ECM'); return; }
+      if (k==='B5'){ if(this.range<20) this.range=40; this.setPage('THR'); return; }
+    }
+    if (this.page==='ECM'){
+      if (k==='B1'){ world.ecm.on=!world.ecm.on; banner('ECM '+(world.ecm.on?'ACTIVE':'OFF'),1.1); this.refresh(); refreshAllMfd(); return; }
+      if (k==='B2'){ world.ecm.channels=[]; banner('ECM CHANNELS CLEARED',1.1); this.refresh(); refreshAllMfd(); return; }
+    }
+    if (this.page==='THR'){
+      const rm={L1:20,L2:40,L3:80,L4:160};
+      if (rm[k]){ this.setRange(rm[k]); return; }
+      if (k==='B1'){ this.setPage('HSD'); return; }
+    }
+    if (this.page==='SMS'){
+      const sm={L1:1,L2:2,L3:3,L4:4,R1:5,R2:6,R3:7,R4:8};
+      if (sm[k]!==undefined){ selectStation(sm[k]); return; }
+      if (k==='B1'){ cycleArm(); return; }
+      if (k==='B2'){ cycleMode(); return; }
+    }
+    if (this.page==='TGP'){
+      const zm={L1:1,L2:2,L3:3,L4:4};
+      if (zm[k]){ this.tgpZoom=zm[k]; this.tgpFov=zm[k]<=2?'WIDE':'NARO'; this.refresh(); return; }
+      if (k==='B1'){ world.designated=!world.designated; banner(world.designated?'TGT DESIGNATED':'TGP STBY',1); this.refresh(); return; }
+      if (k==='R1'){ this.tgpFov = this.tgpFov==='WIDE'?'NARO':'WIDE'; this.tgpZoom = this.tgpFov==='NARO'?4:1; this.refresh(); return; }
+      if (k==='R2'){ this.tgpTrack = this.tgpTrack==='AREA'?'POINT':'AREA'; this.refresh(); return; }
+      if (k==='R3'){ this.laser = !this.laser; world.tgpLaser = this.laser; this.refresh(); return; }
+      if (k==='R4'){ this.tgpPol = this.tgpPol==='WHOT'?'BHOT':'WHOT'; this.refresh(); return; }
+    }
+    if (this.page==='DED'){
+      if (k==='B1'){ DED_PAGE='CNI'; this.refresh(); return; }
+      if (k==='B2'){ DED_PAGE='STPT'; this.refresh(); return; }
+      if (k==='B3'){ DED_PAGE='BIT'; this.refresh(); return; }
+      if (k==='B4'){ DED_PAGE='TUNE'; this.refresh(); return; }
+      if (k==='B5'){ this.setPage('DLNK'); return; }
+      if (k==='R1'){ world.steerpoint=(world.steerpoint%world.waypoints.length)+1; banner('STPT '+world.steerpoint,1); refreshAllMfd(); return; }
+      if (k==='L1'){ world.steerpoint=((world.steerpoint-2+world.waypoints.length)%world.waypoints.length)+1; banner('STPT '+world.steerpoint,1); refreshAllMfd(); return; }
+      if (k==='R3'){ cycleMode(); return; }
+    }
+    if (this.page==='DLNK'){
+      const rm={L1:20,L2:40,L3:80,L4:160};
+      if (rm[k]){ this.dlRange=rm[k]; this.refresh(); return; }
+      if (k==='B1'){ this.setPage('DED'); DED_PAGE='TUNE'; this.refresh(); return; }
+    }
+    this.refresh();
+  }
+  tryLock(x,y){
+    if (this.fcrMode==='HAD'){                       // designate a radar emitter for HARM + slew the TGP onto it
+      let best=22, sel=null;
+      for (const t of world.threats){ if(!t.live) continue;
+        const p=hadPlot(this,t); const d=Math.hypot(p.px-x,p.py-y);
+        if (d<best){ best=d; sel=t; } }
+      if (sel){
+        const on = (world.harmLock!==sel);
+        world.harmLock = on ? sel : null;
+        if (on){ world.gndLock = sel; world.designated = true; }              // point the pod at the emitter too
+        else if (world.gndLock===sel){ world.gndLock = null; world.designated = !!world.airLock; }
+        banner(on?('HARM LOCK \u2014 '+sel.name+'  (TGP SLEW)'):'HARM LOCK CLEARED',1.4);
+      }
+      this.refresh(); refreshAllMfd(); return;
+    }
+    if (this.fcrMode==='SAR'){                       // designate a SAR/GMT contact for the TGP
+      const hits=this._sarHits||[]; let best=18, sel=null;
+      for (const h of hits){ const d=Math.hypot(h.sx-x,h.sy-y); if(d<best){best=d; sel=h;} }
+      if (sel){
+        world.gndLock=(world.gndLock===sel.obj)?null:sel.obj;
+        world.designated=!!world.gndLock;
+        banner(world.gndLock?('GND DESIG \u2014 '+(sel.name||'TARGET')):'DESIG CLEARED',1.2);
+      }
+      this.refresh(); refreshAllMfd(); return;
+    }
+    let best=18, selc=null;
+    for (const c of fcrContacts(this)){
+      const d=Math.hypot(c.sx-x,c.sy-y);
+      if (d<best){ best=d; selc=c; }
+    }
+    if (!selc) return;
+    const sel=selc.bd;
+    this.locked = (this.locked===sel)?null:sel;
+    if (this.locked){
+      if (selc.dom==='GND'){ world.gndLock=sel; world.designated=true;
+        banner('GND LOCK \u2014 '+(selc.name||'TARGET'),1.2); }
+      else { world.airLock=sel; banner('AIR LOCK \u2014 '+(selc.name||'BANDIT'),1.0); }
+    } else {
+      if (selc.dom==='GND'){ world.gndLock=null; } else { world.airLock=null; }
+    }
+    refreshAllMfd();
+  }
+  thrTap(x,y){                      // THREAT page: tap a launch point / emitter to designate + slew the pod
+    const hits=this._thrHits||[]; let best=22, sel=null;
+    for (const h of hits){ const d=Math.hypot(h.sx-x,h.sy-y); if(d<best){best=d; sel=h;} }
+    if (sel && sel.obj && sel.obj.x!==undefined){
+      const o=sel.obj;
+      world.gndLock = (world.gndLock===o)?null:o; world.designated=!!world.gndLock;
+      if (world.gndLock && o.live){ world.harmLock=o; }
+      else if (!world.gndLock && world.harmLock===o){ world.harmLock=null; }
+      banner(world.gndLock?('DESIG \u2014 '+(sel.name||'THREAT')+'  (TGP SLEW)'):'DESIG CLEARED',1.3);
+      this.refresh(); refreshAllMfd();
+    }
+  }
+  ecmTap(x,y){                      // ECM page: tap an emitter row to jam its current band
+    const rows=this._ecmRows||[];
+    for (const r of rows){ if (y>=r.y0 && y<=r.y1){
+      const res=ecmToggleBand(r.band);
+      banner(res==='FULL' ? 'ECM CHANNELS FULL' :
+             res==='JAMMING' ? ('JAMMING B'+r.band+' \u2014 '+(r.th.name||'')) :
+                               ('B'+r.band+' CLEARED'), 1.3);
+      this.refresh(); refreshAllMfd(); return;
+    }}
+  }
+  dedTap(x,y){                      // DED touch keypad (datalink-frequency entry)
+    const keys=this._dedKeys||[];
+    for (const k of keys){ if (x>=k.x && x<=k.x+k.w && y>=k.y && y<=k.y+k.h){ k.act(); break; } }
+    if (window.F16Audio) F16Audio.event('select');
+    this.refresh(); this.render();
+  }
+  refresh(){
+    const L=OSB[this.page]||{};
+    for (const k in this.osbEls){
+      let v=L[k]||''; if (typeof v==='function') v=v(this);
+      const el=this.osbEls[k];
+      const enabled = !!v;
+      el.textContent = v;
+      el.disabled = !enabled;                       // physical button stays, just inert
+      el.classList.toggle('disabled', !enabled);    // dimmed when not used on this page
+      el.classList.toggle('active', enabled && this.osbActive(k));
+    }
+  }
+  osbActive(k){
+    const pg={T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED'};
+    if (pg[k]) return this.page===pg[k];
+    if (this.page==='FCR'){
+      const rm={L1:10,L2:20,L3:40,L4:80}; if (rm[k]) return this.range===rm[k];
+      if (k==='B1') return this.fcrMode!=='RWS';
+    }
+    if (this.page==='HSD'){
+      const rm={L1:10,L2:20,L3:40,L4:80}; if (rm[k]) return this.range===rm[k];
+    }
+    if (this.page==='THR'){
+      const rm={L1:20,L2:40,L3:80,L4:160}; if (rm[k]) return this.range===rm[k];
+    }
+    if (this.page==='ECM'){
+      if (k==='B1') return world.ecm.on;
+    }
+    if (this.page==='DLNK'){
+      const rm={L1:20,L2:40,L3:80,L4:160}; if (rm[k]) return (this.dlRange||80)===rm[k];
+    }
+    if (this.page==='SMS'){
+      const sm={L1:1,L2:2,L3:3,L4:4,R1:5,R2:6,R3:7,R4:8};
+      if (sm[k]!==undefined) return world.selectedStation===sm[k];
+    }
+    if (this.page==='TGP'){
+      const zm={L1:1,L2:2,L3:3,L4:4}; if (zm[k]) return (this.tgpZoom||2)===zm[k];
+      if (k==='B1') return world.designated;
+      if (k==='R1') return this.tgpFov==='NARO';
+      if (k==='R2') return this.tgpTrack==='POINT';
+      if (k==='R3') return this.laser;
+      if (k==='R4') return this.tgpPol==='BHOT';
+    }
+    if (this.page==='DED'){
+      if (k==='B1') return DED_PAGE==='CNI';
+      if (k==='B2') return DED_PAGE==='STPT';
+      if (k==='B3') return DED_PAGE==='BIT';
+      if (k==='B4') return DED_PAGE==='TUNE';
+    }
+    return false;
+  }
+  update(dt){
+    if (this.page==='FCR' && this.fcrMode==='RWS'){
+      this.sweep += this.sweepDir*this.sweepSpeed*dt;
+      if (this.sweep>=this.azScan){this.sweep=this.azScan;this.sweepDir=-1;}
+      if (this.sweep<=-this.azScan){this.sweep=-this.azScan;this.sweepDir=1;}
+      for (const c of fcrContacts(this)){
+        if (Math.abs(c.az - this.sweep) < this.sweepSpeed*dt*1.6) c.bd._det=world.t;
+      }
+    }
+  }
+  render(){
+    const ctx=this.ctx;
+    ctx.fillStyle='#01160a'; ctx.fillRect(0,0,this.W,this.H);
+    (PAGES[this.page]||PAGES.DED).render(this,ctx);
+    footer(this,ctx);
+  }
+}
+
+/* ---------- OSB label tables (label present == button enabled on page) --- */
+const OSB={
+  FCR:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
+       L1:'10',L2:'20',L3:'40',L4:'80', B1:m=>m.fcrMode},
+  HSD:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
+       L1:'10',L2:'20',L3:'40',L4:'80', B4:'ECM', B5:'THR'},
+  THR:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
+       L1:'20',L2:'40',L3:'80',L4:'160', B1:'HSD'},
+  ECM:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
+       B1:m=>world.ecm.on?'ECM ON':'ECM OFF', B2:'CLR'},
+  SMS:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
+       L1:'9X',L2:'120',L3:'AGM',L4:'AGM',R1:'82',R2:'82',R3:'HARM',R4:'TGP',
+       B1:m=>'ARM:'+world.masterArm, B2:m=>world.masterMode },
+  TGP:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
+       L1:'Z1',L2:'Z2',L3:'Z3',L4:'Z4',
+       B1:m=>world.designated?'DESIG':'STBY', R1:m=>m.tgpFov, R2:m=>m.tgpTrack, R3:m=>m.laser?'LZR\u25cf':'LZR', R4:m=>m.tgpPol},
+  DED:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
+       L1:'\u25bc', R1:'\u25b2', R3:m=>world.masterMode, B1:'CNI', B2:'STPT', B3:'BIT', B4:'TUNE', B5:'DLNK'},
+  DLNK:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED', L1:'20',L2:'40',L3:'80',L4:'160', B1:'TUNE'},
+};
+
+/* ---------- common footer ---------- */
+function footer(m,ctx){
+  ctx.fillStyle=C_GREEN; ctx.font='9px "Courier New"'; ctx.textAlign='left';
+  ctx.fillText(world.masterMode, 6, m.H-6);
+  ctx.textAlign='center';
+  ctx.fillText('FL'+String(Math.round(world.ac.pos.z*FT/100)).padStart(3,'0'), m.W/2, m.H-6);
+  ctx.textAlign='right';
+  ctx.fillText(String(Math.round(world.ac.tas*KT))+'KT', m.W-6, m.H-6);
+}
+
+/* ---------- FCR contacts (live, track-up B-scope) ---------- */
+function fcrAirMode(){ const m=world.masterMode; return m==='A-A'||m==='DGFT'||m==='NAV'; }
+function fcrContacts(m){
+  const out=[]; const ac=world.ac;
+  const PADx=34, PADt=34, PADb=40;
+  const FW=m.W-2*PADx, FH=m.H-PADt-PADb;
+  const add=(ent,x,y,z,dom,sym,name,hostile)=>{
+    const rel = vsub({x,y,z}, ac.pos);
+    const brg = wrap2pi(Math.atan2(rel.x,rel.y));
+    let az = angWrap(brg - ac.psi)*RAD;
+    const rng = vlen(rel)/NM;
+    if (Math.abs(az)>m.azScan || rng>m.range) return;
+    const sx = PADx + ((az+m.azScan)/(2*m.azScan))*FW;
+    const sy = PADt + FH - (rng/m.range)*FH;
+    out.push({bd:ent, dom, sym, name, hostile, az, rng, sx, sy});
+  };
+  if (fcrAirMode()){                                   // A-A : air tracks only
+    for (const bd of world.bandits){ if (bd.hp<=0) continue;
+      add(bd, bd.x, bd.y, bd.alt, 'AIR', 'chev', bd.kind||'AIR', bd.kind==='HOSTILE'); }
+  } else {                                             // A-G : ground targets only
+    for (const v of world.hvts){ if (v.destroyed) continue;
+      add(v, v.x, v.y, terrainH(v.x,v.y), 'GND', 'dia', v.name||'HVT', true); }
+    for (const gm of world.groundMovers){ if (gm.destroyed) continue;
+      add(gm, gm.x, gm.y, terrainH(gm.x,gm.y), 'GND', 'sq', gm.name||'GND', true); }
+    if (!world.target.destroyed)
+      add(world.target, world.target.x, world.target.y, terrainH(world.target.x,world.target.y),
+          'GND', 'star', 'TARGET', true);
+  }
+  return out;
+}
+
+/* draw an FCR track symbol centred at (x,y) */
+function fcrSym(ctx,x,y,sym){
+  ctx.beginPath();
+  if (sym==='chev'){ ctx.moveTo(x-5,y+4); ctx.lineTo(x,y-5); ctx.lineTo(x+5,y+4); ctx.stroke(); }
+  else if (sym==='sq'){ ctx.strokeRect(x-4,y-4,8,8); }
+  else if (sym==='dia'){ ctx.moveTo(x,y-6); ctx.lineTo(x+6,y); ctx.lineTo(x,y+6); ctx.lineTo(x-6,y); ctx.closePath(); ctx.stroke(); }
+  else if (sym==='star'){ for(let i=0;i<5;i++){ const a=-Math.PI/2+i*4*Math.PI/5; const px=x+Math.cos(a)*7,py=y+Math.sin(a)*7; i?ctx.lineTo(px,py):ctx.moveTo(px,py);} ctx.closePath(); ctx.stroke(); }
+  else { ctx.fillRect(x-3,y-3,6,6); }
+}
+
+/* screen plot of an emitter on the HAD scope (shared by render + click-lock) */
+function hadPlot(m,t){
+  const ac=world.ac, W=m.W, H=m.H;
+  const cx=W/2, cy=H/2+10, R=Math.min(W,H)/2-30;
+  const rel=vsub({x:t.x,y:t.y,z:0}, ac.pos);
+  const relAz=angWrap(wrap2pi(Math.atan2(rel.x,rel.y))-ac.psi);
+  const dist=Math.hypot(rel.x,rel.y);
+  const rr=clamp(dist/((m.range||40)*NM),0,1);
+  return { px:cx+Math.sin(relAz)*R*rr, py:cy-Math.cos(relAz)*R*rr, cx, cy, R };
+}
+
+const PAGES={};
+PAGES.FCR={
+  render(m,ctx){
+    if (m.fcrMode==='SAR'){ this.renderSAR(m,ctx); return; }
+    if (m.fcrMode==='HAD'){ this.renderHAD(m,ctx); return; }
+    const air=fcrAirMode();
+    const ac=world.ac; const W=m.W,H=m.H;
+    const PADx=34,PADt=34,PADb=40, FW=W-2*PADx, FH=H-PADt-PADb;
+    // frame
+    ctx.strokeStyle=C_GREEN; ctx.lineWidth=1; ctx.strokeRect(PADx,PADt,FW,FH);
+    // range ticks
+    ctx.fillStyle=C_GREEN; ctx.font='9px "Courier New"'; ctx.textAlign='right';
+    for (let i=1;i<=4;i++){ const y=PADt+FH-(i/4)*FH;
+      ctx.beginPath(); ctx.moveTo(PADx-4,y); ctx.lineTo(PADx,y); ctx.stroke();
+      if(i%2===0) ctx.fillText((m.range*i/4|0),PADx-6,y+3); }
+    // az center + ticks
+    ctx.strokeStyle=C_DIM; ctx.setLineDash([3,4]);
+    ctx.beginPath(); ctx.moveTo(PADx,PADt+FH/2); ctx.lineTo(PADx+FW,PADt+FH/2); ctx.stroke(); ctx.setLineDash([]);
+    // sweep
+    const sx=PADx+((m.sweep+m.azScan)/(2*m.azScan))*FW;
+    const gr=ctx.createLinearGradient(sx-m.sweepDir*36,0,sx,0);
+    gr.addColorStop(0,'rgba(39,255,94,0)'); gr.addColorStop(1,'rgba(39,255,94,0.18)');
+    ctx.fillStyle=gr; ctx.fillRect(m.sweepDir>0?sx-36:sx,PADt,36,FH);
+    ctx.strokeStyle='rgba(168,255,192,0.9)'; ctx.beginPath(); ctx.moveTo(sx,PADt); ctx.lineTo(sx,PADt+FH); ctx.stroke();
+    // contacts (domain-filtered)
+    for (const c of fcrContacts(m)){
+      const fresh = c.dom!=='AIR' || (world.t - (c.bd._det||-99) < 2.2);
+      const isLock = m.locked===c.bd;
+      if (!fresh && !isLock) continue;
+      const col = c.dom==='AIR' ? (c.hostile?C_RED:C_YEL)
+                                : (c.sym==='star'?C_HOT : c.sym==='dia'?C_RED : C_ORG);
+      ctx.strokeStyle=col; ctx.fillStyle=col; ctx.lineWidth=isLock?2:1.3;
+      fcrSym(ctx,c.sx,c.sy,c.sym);
+      if (isLock){
+        ctx.strokeStyle=C_HOT; ctx.lineWidth=1.4; ctx.strokeRect(c.sx-8,c.sy-8,16,16);
+        ctx.beginPath(); ctx.moveTo(c.sx,PADt); ctx.lineTo(c.sx,c.sy-8); ctx.stroke();
+        ctx.fillStyle=C_HOT; ctx.font='8px "Courier New"'; ctx.textAlign='left';
+        if (c.dom==='AIR') ctx.fillText(Math.round(c.bd.alt*FT/100)*100+'', c.sx+9, c.sy-2);
+        ctx.fillText(Math.round(c.rng)+'NM', c.sx+9, c.sy+8);
+      }
+    }
+    // header
+    ctx.fillStyle=C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left';
+    ctx.fillText(air?'FCR A-A':'FCR A-G', 6, 14);
+    ctx.textAlign='right'; ctx.fillText('A'+m.range, W-6, 14);
+    ctx.textAlign='center'; ctx.font='9px "Courier New"';
+    ctx.fillText('±'+m.azScan+'°  '+(m.locked?(air?'STT':'GND TRK'):'SCAN'), W/2, PADt-6);
+  },
+
+  /* HAD : HARM Attack Display — radar emitters, jammers, HARM targeting */
+  renderHAD(m,ctx){
+    const ac=world.ac, W=m.W, H=m.H;
+    const cx=W/2, cy=H/2+10, R=Math.min(W,H)/2-30;
+    // range rings
+    ctx.strokeStyle=C_DIM; ctx.lineWidth=1;
+    for (let i=1;i<=3;i++){ ctx.beginPath(); ctx.arc(cx,cy,R*i/3,0,2*Math.PI); ctx.stroke(); }
+    ctx.fillStyle=C_DIM; ctx.font='8px "Courier New"'; ctx.textAlign='left';
+    const _r=m.range||40, r1=Math.round(_r/3), r2=Math.round(2*_r/3);
+    ctx.fillText(''+r1, cx+2, cy-R/3+9); ctx.fillText(''+r2, cx+2, cy-2*R/3+9); ctx.fillText(''+_r, cx+2, cy-R+9);
+    // nose line + ownship
+    ctx.strokeStyle=C_DIM; ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx,cy-R); ctx.stroke();
+    ctx.fillStyle=C_GREEN; ctx.beginPath(); ctx.moveTo(cx,cy-6); ctx.lineTo(cx-4,cy+5); ctx.lineTo(cx+4,cy+5); ctx.closePath(); ctx.fill();
+    // emitters
+    let anyLive=false;
+    for (const t of world.threats){
+      if (!t.live) continue; anyLive=true;
+      const p=hadPlot(m,t);
+      const desig=(world.harmLock===t);
+      const col = t.tracking?C_RED:(t.color||C_ORG);
+      ctx.strokeStyle=col; ctx.fillStyle=col; ctx.lineWidth=desig?2:1.3;
+      // emitter glyph: half-circle 'radar' over a base + threat spike
+      ctx.beginPath(); ctx.arc(p.px,p.py,desig?7:5,Math.PI,2*Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p.px-5,p.py); ctx.lineTo(p.px+5,p.py); ctx.stroke();
+      ctx.font='8px "Courier New"'; ctx.textAlign='center';
+      ctx.fillText(t.name, p.px, p.py+15);
+      if (t.tracking){ ctx.fillStyle=C_RED; ctx.fillText('TRK', p.px, p.py-9); }
+      if (t.jammer){ ctx.fillStyle=C_YEL; ctx.fillText('JAM', p.px, p.py-(t.tracking?19:9)); }
+      if (desig){ ctx.strokeStyle=C_HOT; ctx.lineWidth=1.4; ctx.strokeRect(p.px-10,p.py-10,20,20); }
+    }
+    if (!anyLive){ ctx.fillStyle=C_DIM; ctx.font='11px "Courier New"'; ctx.textAlign='center';
+      ctx.fillText('NO EMITTERS', cx, cy-4); ctx.fillText('(threats destroyed)', cx, cy+12); }
+    // header + HARM status
+    ctx.fillStyle=C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left';
+    ctx.fillText('HAD  EW/HARM  R'+(m.range||40), 6, 14);
+    const harm=world.stations.find(s=>s.kind==='harm');
+    ctx.textAlign='right'; ctx.fillStyle=harm&&harm.qty>0?C_GREEN:C_DIM;
+    ctx.fillText('HARM '+(harm?harm.qty:0), W-6, 14);
+    ctx.textAlign='center'; ctx.font='9px "Courier New"'; ctx.fillStyle=C_HOT;
+    if (world.harmLock && world.harmLock.live){
+      ctx.fillText('LOCK '+world.harmLock.name+'  \u2014 SPACE=MAGNUM', W/2, H-12);
+    }
+  },
+
+  /* SAR : synthetic-aperture ground map patch around the steerpoint/target */
+  renderSAR(m,ctx){
+    // Forward-looking SAR / GMT map: the patch is cued AHEAD of the jet (so you
+    // scan the ground as you fly), sweeps like a radar, and tags moving vehicles,
+    // mobile TELs and (SAR-only) underground facilities. Tap a contact to hand it
+    // to the TGP. Heights are cached on a quantised centre -> no per-frame noise.
+    const ac=world.ac, W=m.W, H=m.H, PADx=20, PADt=30, PADb=40;
+    const FW=W-2*PADx, FH=H-PADt-PADb, cx0=PADx+FW/2, cy0=PADt+FH/2;
+    const halfNM=m.range/4, half=halfNM*NM, half2=2*half;
+    const cs=Math.cos(ac.psi), sn=Math.sin(ac.psi);
+    const cueX=ac.pos.x+Math.sin(ac.psi)*half, cueY=ac.pos.y+Math.cos(ac.psi)*half;
+    const ctr={ x:Math.round(cueX/800)*800, y:Math.round(cueY/800)*800 };
+    const PN=64;
+    let sp=this._sarH;
+    if (!sp || sp.cx!==ctr.x || sp.cy!==ctr.y || sp.half!==half || sp.gen!==world.terrainGen){
+      const Hs=new Float32Array(PN*PN);
+      for (let j=0;j<PN;j++) for (let i=0;i<PN;i++){
+        const wx=ctr.x+((i+0.5)/PN-0.5)*half2, wy=ctr.y+((j+0.5)/PN-0.5)*half2;
+        Hs[j*PN+i]=terrainH(wx,wy);
+      }
+      sp=this._sarH={cx:ctr.x,cy:ctr.y,half,Hs,gen:world.terrainGen};
+    }
+    const Hs=sp.Hs;
+    let pal=this._sarPal;
+    if(!pal){ pal=this._sarPal=[]; for(let k=0;k<16;k++) pal.push('rgba(120,255,150,'+(0.08+(k/15)*0.62).toFixed(3)+')'); }
+    const pk=(typeof TERRAIN_PEAK!=='undefined'?TERRAIN_PEAK:1850);
+    const NX=40, NY=34, cw=FW/NX, ch=FH/NY;
+    const sweep=(world.t*0.5)%1, sweepY=PADt+sweep*FH;     // range sweep, far(top)->near
+    for (let j=0;j<NY;j++) for (let i=0;i<NX;i++){
+      const lx=((i+0.5)/NX-0.5)*half2, ly=((j+0.5)/NY-0.5)*half2;
+      const gx=ctr.x+lx*cs+ly*sn, gy=ctr.y+lx*sn-ly*cs;
+      let pi=((gx-ctr.x)/half2+0.5)*PN|0; if(pi<0)pi=0; else if(pi>=PN)pi=PN-1;
+      let pj=((gy-ctr.y)/half2+0.5)*PN|0; if(pj<0)pj=0; else if(pj>=PN)pj=PN-1;
+      const hgt=Hs[pj*PN+pi];
+      const spk=0.6+0.4*(((i*7+j*13)^(i+j))&7)/7;
+      let b=clamp((hgt/pk)*0.85+0.10,0,1)*spk;
+      const cyc=PADt+(j+0.5)*ch; let dphase=(cyc-sweepY)/FH; if(dphase<0)dphase+=1;
+      b*=(0.55+0.45*(1-dphase));                            // brighten the freshly-swept band
+      ctx.fillStyle=pal[clamp(b*15|0,0,15)];
+      ctx.fillRect(PADx+i*cw,PADt+j*ch,cw+0.6,ch+0.6);
+    }
+    const plot=(wx,wy)=>{ const dx=wx-ctr.x,dy=wy-ctr.y; const rx=dx*cs+dy*sn, ry=dx*(-sn)+dy*cs;
+      return { sx:cx0+(rx/half2)*FW, sy:cy0-(ry/half2)*FH }; };
+    const inF=p=> p.sx>=PADx&&p.sx<=PADx+FW&&p.sy>=PADt&&p.sy<=PADt+FH;
+    const recency=(p,o)=>{ if(Math.abs(p.sy-sweepY)<5) o._gmtT=world.t; return clamp(1-(world.t-(o._gmtT||-99))/2.0,0.2,1); };
+    const hits=[];
+    // strike-target buildings — fixed bright returns
+    if (!world.target.destroyed){
+      for (const bd of world.target.buildings){ if(bd.destroyed)continue; const p=plot(bd.x,bd.y); if(!inF(p))continue;
+        ctx.fillStyle=bd.primary?C_HOT:'#d9ffe6'; ctx.fillRect(p.sx-3,p.sy-3,6,6);
+        ctx.strokeStyle=bd.primary?C_RED:C_GREEN; ctx.lineWidth=1; ctx.strokeRect(p.sx-6,p.sy-6,12,12);
+        if(bd.primary){ ctx.fillStyle=C_RED; ctx.font='8px "Courier New"'; ctx.textAlign='left'; ctx.fillText('TGT',p.sx+8,p.sy+3); }
+        hits.push({sx:p.sx,sy:p.sy,obj:bd,name:bd.label||'TGT'});
+      }
+    }
+    // underground facilities — SAR-only returns (hollow diamond; red if armed)
+    for (const st of world.structures){ if(st.destroyed)continue; const p=plot(st.x,st.y); if(!inF(p))continue;
+      ctx.globalAlpha=recency(p,st);
+      ctx.strokeStyle=st.hostile?C_RED:'#7fe0ff'; ctx.lineWidth=1.2;
+      ctx.beginPath(); ctx.moveTo(p.sx,p.sy-6); ctx.lineTo(p.sx+6,p.sy); ctx.lineTo(p.sx,p.sy+6); ctx.lineTo(p.sx-6,p.sy); ctx.closePath(); ctx.stroke();
+      ctx.fillStyle=st.hostile?C_RED:'#7fe0ff'; ctx.font='7px "Courier New"'; ctx.textAlign='left'; ctx.fillText('UGF',p.sx+8,p.sy+2);
+      ctx.globalAlpha=1; hits.push({sx:p.sx,sy:p.sy,obj:st,name:st.name});
+    }
+    // HVTs
+    for (const v of world.hvts){ if(v.destroyed)continue; const p=plot(v.x,v.y); if(!inF(p))continue;
+      ctx.fillStyle=C_HOT; ctx.fillRect(p.sx-2,p.sy-2,5,5); ctx.strokeStyle=C_HOT; ctx.lineWidth=1; ctx.strokeRect(p.sx-5,p.sy-5,10,10);
+      hits.push({sx:p.sx,sy:p.sy,obj:v,name:v.name}); }
+    // GMT — moving vehicles + mobile TELs, with track history + velocity leader
+    for (const gm of world.groundMovers){ if(gm.destroyed||gm.underground)continue; const p=plot(gm.x,gm.y); if(!inF(p))continue;
+      if (gm.track&&gm.track.length>1){ ctx.strokeStyle='rgba(255,200,120,0.35)'; ctx.lineWidth=1; ctx.beginPath();
+        gm.track.forEach((t,i)=>{ const q=plot(t.x,t.y); if(i===0)ctx.moveTo(q.sx,q.sy); else ctx.lineTo(q.sx,q.sy); }); ctx.stroke(); }
+      ctx.globalAlpha=recency(p,gm);
+      const tel=gm.kind==='TEL';
+      ctx.fillStyle=tel?'#ff7a4d':'#ffd9a8'; ctx.fillRect(p.sx-3,p.sy-3,6,6);
+      ctx.strokeStyle=tel?C_RED:C_ORG; ctx.lineWidth=1; ctx.strokeRect(p.sx-4,p.sy-4,8,8);
+      const lead=plot(gm.x+Math.sin(gm.psi)*220, gm.y+Math.cos(gm.psi)*220);
+      ctx.beginPath(); ctx.moveTo(p.sx,p.sy); ctx.lineTo(lead.sx,lead.sy); ctx.stroke();
+      ctx.globalAlpha=1;
+      if (tel){ ctx.fillStyle=C_RED; ctx.font='7px "Courier New"'; ctx.textAlign='left'; ctx.fillText('TEL',p.sx+6,p.sy-4); }
+      hits.push({sx:p.sx,sy:p.sy,obj:gm,name:gm.name});
+    }
+    m._sarHits=hits;
+    // designation box on the locked contact
+    if (world.gndLock && !world.gndLock.destroyed){ const p=plot(world.gndLock.x,world.gndLock.y);
+      if (inF(p)){ ctx.strokeStyle=C_HOT; ctx.lineWidth=1.5; ctx.strokeRect(p.sx-9,p.sy-9,18,18);
+        ctx.fillStyle=C_HOT; ctx.font='8px "Courier New"'; ctx.textAlign='left'; ctx.fillText('DESIG',p.sx+11,p.sy+3); } }
+    // sweep line + frame
+    ctx.strokeStyle='rgba(120,255,150,0.9)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(PADx,sweepY); ctx.lineTo(PADx+FW,sweepY); ctx.stroke();
+    ctx.strokeStyle=C_GREEN; ctx.lineWidth=1; ctx.strokeRect(PADx,PADt,FW,FH);
+    // header / labels
+    ctx.fillStyle=C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left';
+    ctx.fillText('FCR SAR/GMT', 6, 14);
+    ctx.textAlign='right'; ctx.fillText('A'+m.range, W-6, 14);
+    ctx.textAlign='center'; ctx.font='9px "Courier New"';
+    ctx.fillText('GND MAP  '+(halfNM*2).toFixed(0)+'NM', W/2, PADt-6);
+    const sr=distTo(ctr.x,ctr.y)/NM;
+    ctx.textAlign='left'; ctx.fillText('SR '+sr.toFixed(1)+'NM', PADx, PADt+FH+14);
+    const ntrk=world.groundMovers.filter(g=>!g.destroyed&&!g.underground).length;
+    ctx.textAlign='right'; ctx.fillText('GMT TRK '+ntrk, PADx+FW, PADt+FH+14);
+  }
+};
+
+/* ---------- HSD : top-down track-up map (same world) ---------- */
+PAGES.HSD={
+  render(m,ctx){
+    const ac=world.ac, W=m.W, H=m.H, cx=W/2, cy=H*0.56, Rpx=Math.min(W,H)*0.42;
+    const scale=Rpx/m.range;          // px per NM
+    const toXY=(wx,wy)=>{
+      const dx=(wx-ac.pos.x)/NM, dy=(wy-ac.pos.y)/NM;     // NM east/north
+      const rel=angWrap(Math.atan2(dx,dy)-ac.psi);
+      const d=Math.hypot(dx,dy);
+      return { x: cx + d*Math.sin(rel)*scale, y: cy - d*Math.cos(rel)*scale, d };
+    };
+    // range rings
+    ctx.strokeStyle=C_DIM; ctx.lineWidth=1;
+    for (let i=1;i<=2;i++){ ctx.beginPath(); ctx.arc(cx,cy,Rpx*i/2,0,2*Math.PI); ctx.stroke(); }
+    ctx.fillStyle=C_GREEN; ctx.font='8px "Courier New"'; ctx.textAlign='left';
+    ctx.fillText((m.range/2|0)+'',cx+4,cy-Rpx/2+10); ctx.fillText(m.range+'',cx+4,cy-Rpx+10);
+    // compass ticks (track-up)
+    ctx.strokeStyle=C_DIM;
+    for (let a=0;a<360;a+=30){ const r=angWrap((a-ac.psi*RAD)*DEG);
+      const x1=cx+Math.sin(r)*Rpx, y1=cy-Math.cos(r)*Rpx, x2=cx+Math.sin(r)*(Rpx-6), y2=cy-Math.cos(r)*(Rpx-6);
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); }
+    // threats
+    for (const th of world.threats){ if(!th.live)continue;
+      const p=toXY(th.x,th.y);
+      ctx.strokeStyle=th.tracking?th.color:'rgba(255,120,80,0.5)';
+      ctx.lineWidth=th.tracking?1.6:1;
+      ctx.beginPath(); ctx.arc(p.x,p.y,th.radius/NM*scale,0,2*Math.PI); ctx.stroke();
+      ctx.fillStyle=th.color; ctx.fillText(th.name,p.x+3,p.y-3);
+    }
+    // route line + waypoints
+    ctx.strokeStyle='rgba(39,255,94,0.6)'; ctx.lineWidth=1; ctx.beginPath();
+    world.waypoints.forEach((w,i)=>{ const p=toXY(w.x,w.y); if(i===0)ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); });
+    ctx.stroke();
+    for (const w of world.waypoints){ const p=toXY(w.x,w.y);
+      const cur=w.id===world.steerpoint;
+      ctx.strokeStyle=cur?C_HOT:C_GREEN; ctx.fillStyle=cur?C_HOT:C_GREEN; ctx.lineWidth=cur?1.6:1;
+      ctx.beginPath(); ctx.moveTo(p.x,p.y-4); ctx.lineTo(p.x+4,p.y); ctx.lineTo(p.x,p.y+4); ctx.lineTo(p.x-4,p.y); ctx.closePath(); ctx.stroke();
+      ctx.font='8px "Courier New"'; ctx.textAlign='left'; ctx.fillText(w.name,p.x+6,p.y+3);
+    }
+    // target
+    if (!world.target.destroyed){ const p=toXY(world.target.x,world.target.y);
+      ctx.strokeStyle=C_YEL; ctx.lineWidth=1.4;
+      ctx.beginPath(); ctx.arc(p.x,p.y,6,0,2*Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p.x-8,p.y); ctx.lineTo(p.x+8,p.y); ctx.moveTo(p.x,p.y-8); ctx.lineTo(p.x,p.y+8); ctx.stroke();
+    }
+    // bullseye
+    { const p=toXY(world.bullseye.x,world.bullseye.y);
+      ctx.strokeStyle=C_DIM; ctx.beginPath(); ctx.arc(p.x,p.y,5,0,2*Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.arc(p.x,p.y,2,0,2*Math.PI); ctx.stroke(); }
+    // bandits
+    for (const bd of world.bandits){ if(bd.hp<=0)continue; const p=toXY(bd.x,bd.y);
+      if (p.d>m.range) continue;
+      ctx.strokeStyle=bd.kind==='HOSTILE'?C_RED:C_YEL; ctx.lineWidth=1.2;
+      ctx.beginPath(); ctx.moveTo(p.x-4,p.y+3); ctx.lineTo(p.x,p.y-4); ctx.lineTo(p.x+4,p.y+3); ctx.stroke();
+    }
+    // moving ground targets (filled squares)
+    for (const gm of world.groundMovers){ if(gm.destroyed||gm.underground)continue; const p=toXY(gm.x,gm.y); if(p.d>m.range)continue;
+      ctx.strokeStyle=C_ORG; ctx.fillStyle='rgba(255,154,77,0.25)'; ctx.lineWidth=1.2;
+      ctx.fillRect(p.x-3,p.y-3,6,6); ctx.strokeRect(p.x-3,p.y-3,6,6);
+      ctx.fillStyle=C_ORG; ctx.font='7px "Courier New"'; ctx.textAlign='left'; ctx.fillText(gm.name,p.x+5,p.y+2);
+    }
+    // high-value targets (diamond + cross)
+    for (const v of world.hvts){ if(v.destroyed)continue; const p=toXY(v.x,v.y); if(p.d>m.range)continue;
+      ctx.strokeStyle=C_RED; ctx.lineWidth=1.4;
+      ctx.beginPath(); ctx.moveTo(p.x,p.y-6); ctx.lineTo(p.x+6,p.y); ctx.lineTo(p.x,p.y+6); ctx.lineTo(p.x-6,p.y); ctx.closePath(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p.x-6,p.y-6); ctx.lineTo(p.x+6,p.y+6); ctx.moveTo(p.x+6,p.y-6); ctx.lineTo(p.x-6,p.y+6); ctx.stroke();
+      ctx.fillStyle=C_RED; ctx.font='7px "Courier New"'; ctx.textAlign='left'; ctx.fillText(v.name,p.x+7,p.y+2);
+    }
+    // friendly AWACS data assets (cyan)
+    for (const f of world.friendlies){ if(!f.alive)continue; const p=toXY(f.x,f.y); if(p.d>m.range)continue;
+      ctx.strokeStyle='#5bd6ff'; ctx.fillStyle='#5bd6ff'; ctx.lineWidth=1.3;
+      ctx.beginPath(); ctx.arc(p.x,p.y,5,Math.PI,2*Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.arc(p.x,p.y,2,0,2*Math.PI); ctx.fill();
+      ctx.font='7px "Courier New"'; ctx.textAlign='left'; ctx.fillText(f.type,p.x+7,p.y+2);
+    }
+    // datalink picture from AWACS — hollow cyan rings on known enemies
+    if (datalinkActive()){
+      ctx.strokeStyle='rgba(91,214,255,0.8)'; ctx.lineWidth=1;
+      const ring=(wx,wy)=>{ const p=toXY(wx,wy); if(p.d>m.range)return; ctx.beginPath(); ctx.arc(p.x,p.y,7,0,2*Math.PI); ctx.stroke(); };
+      for (const bd of world.bandits){ if(bd.hp>0) ring(bd.x,bd.y); }
+      for (const gm of world.groundMovers){ if(!gm.destroyed) ring(gm.x,gm.y); }
+      for (const v of world.hvts){ if(!v.destroyed) ring(v.x,v.y); }
+      ctx.fillStyle='#5bd6ff'; ctx.font='bold 8px "Courier New"'; ctx.textAlign='right';
+      ctx.fillText('AWACS LINK', W-6, 26);
+    }
+    // our weapons in flight — track on the radar toward their targets
+    for (const s of world.sams){
+      if (s.team!=='BLUE') continue;
+      const p=toXY(s.pos.x,s.pos.y); if(p.d>m.range) continue;
+      if (s.tgt){ const tp=toXY(s.tgt.x,s.tgt.y);
+        ctx.strokeStyle='rgba(168,255,200,0.5)'; ctx.setLineDash([3,3]); ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(tp.x,tp.y); ctx.stroke(); ctx.setLineDash([]);
+      }
+      ctx.strokeStyle='#a8ffc0'; ctx.fillStyle='#a8ffc0'; ctx.lineWidth=1.2;
+      ctx.beginPath(); ctx.moveTo(p.x-3,p.y);ctx.lineTo(p.x+3,p.y);ctx.moveTo(p.x,p.y-3);ctx.lineTo(p.x,p.y+3); ctx.stroke();
+      ctx.fillRect(p.x-1,p.y-1,2,2);
+    }
+    // ownship
+    ctx.strokeStyle=C_HOT; ctx.fillStyle='rgba(168,255,192,0.25)'; ctx.lineWidth=1.4;
+    ctx.beginPath(); ctx.moveTo(cx,cy-7); ctx.lineTo(cx+5,cy+6); ctx.lineTo(cx,cy+3); ctx.lineTo(cx-5,cy+6); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    // header
+    ctx.fillStyle=C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left';
+    ctx.fillText('HSD', 6,14);
+    ctx.textAlign='right'; ctx.fillText('T-UP '+m.range+'NM', W-6,14);
+  }
+};
+
+/* ---------- THREAT / EWS : inbound-missile tracking + launch origins ---------- */
+PAGES.THR={
+  render(m,ctx){
+    const ac=world.ac, W=m.W, H=m.H, cx=W/2, cy=H*0.56, Rpx=Math.min(W,H)*0.42;
+    const scale=Rpx/m.range;
+    const toXY=(wx,wy)=>{ const dx=(wx-ac.pos.x)/NM, dy=(wy-ac.pos.y)/NM;
+      const rel=angWrap(Math.atan2(dx,dy)-ac.psi); const d=Math.hypot(dx,dy);
+      return { x:cx+d*Math.sin(rel)*scale, y:cy-d*Math.cos(rel)*scale, d }; };
+    const hits=[]; m._thrHits=hits;
+    // range rings + compass ticks (track-up)
+    ctx.strokeStyle=C_DIM; ctx.lineWidth=1;
+    for (let i=1;i<=2;i++){ ctx.beginPath(); ctx.arc(cx,cy,Rpx*i/2,0,2*Math.PI); ctx.stroke(); }
+    ctx.fillStyle=C_GREEN; ctx.font='8px "Courier New"'; ctx.textAlign='left';
+    ctx.fillText((m.range/2|0)+'',cx+4,cy-Rpx/2+10); ctx.fillText(m.range+'',cx+4,cy-Rpx+10);
+    ctx.strokeStyle=C_DIM;
+    for (let a=0;a<360;a+=30){ const r=angWrap((a-ac.psi*RAD)*DEG);
+      const x1=cx+Math.sin(r)*Rpx, y1=cy-Math.cos(r)*Rpx, x2=cx+Math.sin(r)*(Rpx-6), y2=cy-Math.cos(r)*(Rpx-6);
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); }
+
+    // live threat emitters — lethal ring + launcher box, tracking ones in red
+    for (const th of world.threats){ if(!th.live||th.destroyed)continue; const p=toXY(th.x,th.y); if(p.d>m.range*1.05)continue;
+      const desig=(th===world.gndLock||th===world.harmLock);
+      ctx.strokeStyle=th.tracking?'rgba(255,60,60,0.9)':'rgba(255,120,80,0.4)'; ctx.lineWidth=th.tracking?1.5:1;
+      ctx.beginPath(); ctx.arc(p.x,p.y, Math.min(Rpx, th.radius/NM*scale),0,2*Math.PI); ctx.stroke();
+      ctx.strokeStyle=desig?C_HOT:(th.tracking?C_RED:C_ORG); ctx.lineWidth=desig?1.8:1.2;
+      ctx.strokeRect(p.x-4,p.y-4,8,8);
+      if (desig){ ctx.beginPath(); ctx.arc(p.x,p.y,8,0,2*Math.PI); ctx.stroke(); }
+      ctx.fillStyle=th.tracking?C_RED:C_ORG; ctx.font='8px "Courier New"'; ctx.textAlign='left';
+      ctx.fillText(th.name+(th.tracking?' *':''), p.x+7, p.y+2);
+      hits.push({sx:p.x,sy:p.y,obj:th,kind:'EMITTER',name:th.name});
+    }
+    // bandits (air)
+    for (const bd of world.bandits){ if(bd.hp<=0)continue; const p=toXY(bd.x,bd.y); if(p.d>m.range)continue;
+      ctx.strokeStyle=bd.kind==='HOSTILE'?C_RED:C_YEL; ctx.lineWidth=1.2;
+      ctx.beginPath(); ctx.moveTo(p.x-4,p.y+3); ctx.lineTo(p.x,p.y-4); ctx.lineTo(p.x+4,p.y+3); ctx.stroke(); }
+
+    // inbound RED missiles — origin marker (where it came from) + track + head + TTI
+    let inbound=0, nearestTTI=Infinity;
+    for (const s of world.sams){ if(s.team!=='RED')continue;
+      const ph=toXY(s.pos.x,s.pos.y);
+      if (s.origin){ const po=toXY(s.origin.x,s.origin.y);
+        ctx.strokeStyle='rgba(255,80,80,0.9)'; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(po.x-4,po.y); ctx.lineTo(po.x+4,po.y); ctx.moveTo(po.x,po.y-4); ctx.lineTo(po.x,po.y+4);
+        ctx.moveTo(po.x-3,po.y-3); ctx.lineTo(po.x+3,po.y+3); ctx.moveTo(po.x+3,po.y-3); ctx.lineTo(po.x-3,po.y+3); ctx.stroke();
+        ctx.fillStyle='rgba(255,130,130,0.95)'; ctx.font='7px "Courier New"'; ctx.textAlign='left'; ctx.fillText('LP '+(s.name||''),po.x+6,po.y-4);
+        hits.push({sx:po.x,sy:po.y,obj:s.src||null,kind:'ORIGIN',name:(s.name||'LAUNCH')+' SITE'});
+      }
+      if (s.trail && s.trail.length>1){ ctx.strokeStyle='rgba(255,60,60,0.7)'; ctx.lineWidth=1.4; ctx.beginPath();
+        s.trail.forEach((t,i)=>{ const p=toXY(t.x,t.y); if(i===0)ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); });
+        ctx.lineTo(ph.x,ph.y); ctx.stroke(); }
+      ctx.fillStyle='#ff3b3b'; ctx.beginPath(); ctx.arc(ph.x,ph.y,3,0,2*Math.PI); ctx.fill();
+      const dist=vlen(vsub({x:s.pos.x,y:s.pos.y,z:s.pos.z}, ac.pos));
+      const tti=dist/Math.max(120,s.spd||300); inbound++; nearestTTI=Math.min(nearestTTI,tti);
+      ctx.fillStyle='#ff8080'; ctx.font='7px "Courier New"'; ctx.textAlign='left'; ctx.fillText(tti.toFixed(0)+'s', ph.x+5, ph.y+3);
+    }
+
+    // ownship
+    ctx.strokeStyle=C_HOT; ctx.fillStyle='rgba(168,255,192,0.25)'; ctx.lineWidth=1.4;
+    ctx.beginPath(); ctx.moveTo(cx,cy-7); ctx.lineTo(cx+5,cy+6); ctx.lineTo(cx,cy+3); ctx.lineTo(cx-5,cy+6); ctx.closePath(); ctx.fill(); ctx.stroke();
+
+    // header + inbound banner
+    ctx.fillStyle=C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left'; ctx.fillText('THREAT  EWS', 6,14);
+    ctx.textAlign='right'; ctx.fillStyle=C_GREEN; ctx.fillText('T-UP '+m.range+'NM', W-6,14);
+    if (inbound>0){
+      ctx.textAlign='center'; ctx.fillStyle=(world.t%1<0.5)?'#ff3b3b':'#ff9a4d'; ctx.font='bold 12px "Courier New"';
+      ctx.fillText('\u25b2 INBOUND '+inbound+'   TTI '+(isFinite(nearestTTI)?nearestTTI.toFixed(0):'-')+'s', cx, H-10);
+    } else {
+      ctx.textAlign='center'; ctx.fillStyle=C_DIM; ctx.font='8px "Courier New"';
+      ctx.fillText('TAP A LAUNCH PT / EMITTER TO DESIGNATE  \u00b7  B1 \u2192 HSD', cx, H-8);
+    }
+  }
+};
+
+/* ---------- ECM / EW POD : detect SAM scan bands, jam them, watch burn-through ---------- */
+PAGES.ECM={
+  render(m,ctx){
+    const W=m.W, H=m.H;
+    ctx.fillStyle=C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left'; ctx.fillText('ECM  EW POD',6,14);
+    ctx.textAlign='right'; ctx.fillStyle=world.ecm.on?'#5bd6ff':C_DIM; ctx.fillText(world.ecm.on?'ACTIVE':'STBY', W-6,14);
+    const DET=70000;
+    const list=world.threats.filter(t=>t.live && !t.destroyed && t.x!==undefined && distTo(t.x,t.y)<DET)
+                            .sort((a,b)=>distTo(a.x,a.y)-distTo(b.x,b.y)).slice(0,8);
+    const rows=[]; m._ecmRows=rows;
+    if (!list.length){ ctx.fillStyle=C_DIM; ctx.textAlign='center'; ctx.font='10px "Courier New"'; ctx.fillText('NO EMITTERS IN RANGE', W/2, 64); }
+    ctx.font='8px "Courier New"';
+    let y=36;
+    for (const th of list){
+      if (!th.scanBands) assignSamFreqs(th);
+      const cur=samCurBand(th), d=distTo(th.x,th.y);
+      const jammedBand = world.ecm.channels.indexOf(cur)>=0;
+      const burnR=ecmBurnRange(th);
+      let status, col;
+      if (!world.ecm.on || !jammedBand){ status='SEARCH'; col=th.tracking?C_RED:C_ORG; }
+      else if (d<=burnR){ status='BURN-THRU'; col='#ffd24d'; }
+      else { status='JAMMED'; col='#5bd6ff'; }
+      ctx.textAlign='left'; ctx.fillStyle=col; ctx.fillText((th.name||'SAM').slice(0,6), 8, y);
+      ctx.fillStyle=C_DIM; ctx.fillText('B'+th.scanBands.join('/'), 66, y);
+      ctx.fillStyle='#9fe6ff'; ctx.fillText('\u2192'+cur, 116, y);
+      ctx.fillStyle=col; ctx.fillText(status, 146, y);
+      ctx.fillStyle=C_DIM; ctx.textAlign='right'; ctx.fillText((d/NM).toFixed(0)+'NM', W-8, y);
+      rows.push({y0:y-10, y1:y+6, th, band:cur});
+      y+=21;
+    }
+    // jam-band spectrum (1..8)
+    const by=H-42, bw=(W-20)/8;
+    ctx.font='7px "Courier New"'; ctx.textAlign='center';
+    for (let b=1;b<=8;b++){ const bx=10+(b-1)*bw, on=world.ecm.channels.indexOf(b)>=0;
+      ctx.strokeStyle=on?'#5bd6ff':C_DIM; ctx.fillStyle=on?'rgba(91,214,255,0.35)':'transparent'; ctx.lineWidth=on?1.6:1;
+      ctx.fillRect(bx+2,by,bw-4,14); ctx.strokeRect(bx+2,by,bw-4,14);
+      ctx.fillStyle=on?'#5bd6ff':C_DIM; ctx.fillText(b, bx+bw/2, by+10); }
+    ctx.textAlign='left'; ctx.fillStyle=C_GREEN; ctx.font='8px "Courier New"'; ctx.fillText('JAM CH '+world.ecm.channels.length+'/'+ECM_MAX_CH, 10, by-4);
+    ctx.textAlign='center'; ctx.fillStyle=C_DIM; ctx.fillText('TAP AN EMITTER TO JAM ITS BAND  \u00b7  B1 ECM ON/OFF', W/2, H-6);
+  }
+};
+
+/* ---------- SMS : silhouette (uses f16.png) + stores ---------- */
+const STN_NORM=[ // normalized over silhouette image
+  {id:1,x:0.045,y:0.645},{id:2,x:0.205,y:0.700},{id:3,x:0.345,y:0.665},
+  {id:4,x:0.430,y:0.625},{id:5,x:0.500,y:0.745},{id:6,x:0.570,y:0.625},
+  {id:7,x:0.655,y:0.665},{id:8,x:0.795,y:0.700},{id:9,x:0.955,y:0.645},
+];
+PAGES.SMS={
+  render(m,ctx){
+    const W=m.W,H=m.H;
+    ctx.fillStyle=C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left';
+    ctx.fillText('SMS',6,14);
+    ctx.textAlign='right'; ctx.fillText(world.masterMode,W-6,14);
+    ctx.textAlign='center';
+    ctx.fillStyle = world.masterArm==='ARM'?C_RED:world.masterArm==='SIM'?C_YEL:C_GREEN;
+    ctx.fillText('M-ARM '+world.masterArm,W/2,14);
+
+    // silhouette draw rect (centered)
+    const ih = H*0.62, iw = ih*(F16IMG.naturalWidth/Math.max(1,F16IMG.naturalHeight) || 0.748);
+    const ix = W/2 - iw/2, iy = 26;
+    if (F16IMG_OK){
+      ctx.save(); ctx.globalAlpha=0.95;
+      ctx.shadowColor=C_GREEN; ctx.shadowBlur=6;
+      ctx.drawImage(F16IMG, ix, iy, iw, ih);
+      ctx.restore();
+    } else {
+      ctx.strokeStyle=C_GREEN; ctx.strokeRect(ix,iy,iw,ih);
+      ctx.fillStyle=C_DIM; ctx.fillText('LOADING SILHOUETTE…',W/2,iy+ih/2);
+    }
+    // station markers over the silhouette
+    const sp=id=>{ const n=STN_NORM.find(s=>s.id===id); return {x:ix+n.x*iw, y:iy+n.y*ih}; };
+    // peripheral labels
+    ctx.font='8px "Courier New"';
+    for (let i=0;i<world.stations.length;i++){
+      const s=world.stations[i]; const p=sp(s.id);
+      const left = s.id<=4 || s.id===5 && false; const leftSide = s.id<=4;
+      const lx = leftSide?4:W-4; const ly = 30 + (leftSide? i: (i-5))*0 ;
+      // stack labels: left ids 1-4 top-down, right ids 6-9, center 5 at bottom
+      let labelX, labelY, align;
+      if (s.id<=4){ align='left'; labelX=4; labelY=34 + (s.id-1)*22; }
+      else { align='right'; labelX=W-4; labelY=34 + (s.id-5)*22; }
+      ctx.textAlign=align;
+      // marker
+      const seld = world.selectedStation===s.id;
+      ctx.strokeStyle = seld?C_HOT: s.qty>0?C_GREEN:'rgba(120,120,120,0.7)';
+      ctx.fillStyle = seld?'rgba(168,255,192,0.3)':'transparent'; ctx.lineWidth=seld?2:1;
+      ctx.fillRect(p.x-3,p.y-3,6,6); ctx.strokeRect(p.x-3,p.y-3,6,6);
+      // label text (no connector line — that was the clutter we removed)
+      ctx.fillStyle=seld?C_HOT:C_GREEN; ctx.font='bold 8px "Courier New"';
+      ctx.fillText('S'+s.id+' '+s.pos, labelX, labelY);
+      const reloading = s.qty<=0 && s.reloadT>0;
+      ctx.fillStyle = reloading?'#ffd24d':(s.qty>0?C_GREEN:'rgba(120,120,120,0.8)'); ctx.font='8px "Courier New"';
+      const qtyTxt = (s.kind==='tank'||s.kind==='pod') ? ''
+                   : reloading ? ('  RLD '+Math.max(0,Math.ceil(s.reloadT-world.t))+'s') : (' x'+s.qty);
+      ctx.fillText(s.wpn+qtyTxt, labelX, labelY+9);
+    }
+    // selected weapon box
+    const sel=selectedStore();
+    if (sel){
+      const bw=150,bh=30,bx=W/2-bw/2,by=H-50;
+      ctx.fillStyle='rgba(0,40,18,0.7)'; ctx.fillRect(bx,by,bw,bh);
+      ctx.strokeStyle=C_HOT; ctx.lineWidth=1; ctx.strokeRect(bx,by,bw,bh);
+      ctx.fillStyle=C_HOT; ctx.font='bold 10px "Courier New"'; ctx.textAlign='center';
+      ctx.fillText('SEL '+sel.wpn, W/2, by+12);
+      const selRld = sel.qty<=0 && sel.reloadT>0;
+      ctx.fillStyle=selRld?'#ffd24d':C_GREEN; ctx.font='9px "Courier New"';
+      ctx.fillText('STA'+sel.id+'  '+(selRld?('REARM '+Math.max(0,Math.ceil(sel.reloadT-world.t))+'s'):('QTY '+sel.qty))+'  '+(sel.kind==='ag'?'A-G':sel.kind==='aa'?'A-A':sel.kind.toUpperCase()), W/2, by+24);
+    }
+    // fuel
+    ctx.fillStyle=C_GREEN; ctx.font='9px "Courier New"'; ctx.textAlign='left';
+    ctx.fillText('FLR '+world.ac.flares, 6, H-18);
+  }
+};
+
+/* ---------- TGP : synthetic FLIR on designated target ---------- */
+/* ---------- TGP : 3D thermal sensor (FLIR mirror of the world) ----------
+   Renders a grayscale view from the jet toward the designated point, with
+   terrain relief, terrain occlusion (painter's order + LOS mask) and a
+   WHITE-HOT / BLACK-HOT polarity toggle. Reuses the global vector helpers. */
+/* TGP aim point depends on sensor domain: air lock in A-A, else a locked
+   ground contact, else the fixed strike target. */
+/* ground-stabilized boresight: depressed nose ray cast to the terrain.
+   Used when nothing is designated, so the TGP never auto-snaps to a target. */
+function defaultTgpPoint(){
+  const ac=world.ac, b=acBasis(ac);
+  let dx=b.fwd.x, dy=b.fwd.y, dz=b.fwd.z-0.45;          // forward, tilted down
+  const dl=Math.hypot(dx,dy,dz)||1; dx/=dl; dy/=dl; dz/=dl;
+  if (dz > -0.03) dz=-0.03;                              // always look at least a little down
+  let px=ac.pos.x, py=ac.pos.y, pz=ac.pos.z;
+  for (let s=0;s<140;s++){ px+=dx*300; py+=dy*300; pz+=dz*300; if (pz<=terrainH(px,py)) break; }
+  return {x:px, y:py, z:terrainH(px,py)+4, dom:'GND', name:'BORE', desig:false};
+}
+function tgpAimPoint(){
+  const air = (world.masterMode==='A-A' || world.masterMode==='DGFT');
+  if (air && world.airLock){                  // hold the air target — incl. after the kill — until re-designated
+    const b=world.airLock; return {x:b.x, y:b.y, z:b.alt, dom:'AIR', desig:true,
+      name:(b.hp>0?(b.kind||'AIR')+' TGT':'\u2014 DESTROYED \u2014')};
+  }
+  if (world.gndLock){                         // hold the ground point — incl. after the kill — until re-designated
+    const g=world.gndLock; return {x:g.x, y:g.y, z:terrainH(g.x,g.y)+6, dom:'GND', desig:true,
+      name:(g.destroyed?'\u2014 DESTROYED \u2014':(g.name||'GND TGT'))};
+  }
+  return defaultTgpPoint();                    // nothing designated -> boresight, never the strike target
+}
+function tgpSensor(){
+  const ac=world.ac;
+  const a = tgpAimPoint();
+  const tp  = { x:a.x, y:a.y, z:a.z };
+  const eye = { x:ac.pos.x, y:ac.pos.y, z:ac.pos.z };
+  const fwd = vnorm(vsub(tp, eye));
+  let right = vcross(fwd, {x:0,y:0,z:1});
+  // looking (near) straight down: cross product degenerates — fall back to a
+  // frame whose "up" tracks the jet's nose, so the top-down picture stays sensible.
+  if (vlen(right) < 1e-3) right = { x:Math.cos(ac.psi), y:-Math.sin(ac.psi), z:0 };
+  right = vnorm(right);
+  const up = vnorm(vcross(right, fwd));
+  return { eye, tp, fwd, right, up, dom:a.dom, name:a.name };
+}
+function tgpMasked(eye, tp){            // terrain between us and the aim point?
+  for (let s=1;s<40;s++){
+    const f=s/40;
+    const x=eye.x+(tp.x-eye.x)*f, y=eye.y+(tp.y-eye.y)*f, z=eye.z+(tp.z-eye.z)*f;
+    if (terrainH(x,y) > z + 8) return true;
+  }
+  return false;
+}
+/* pod gimbal limits: it can't look much above the jet's own plane, nor far aft.
+   Roll/pitch the jet to a crazy attitude and the look-angle runs out -> GIMBAL. */
+function tgpGimbal(S){
+  const b = acBasis(world.ac);
+  const up = vdot(S.fwd, b.up);        // +ve => aim point is above the jet's plane
+  const fw = vdot(S.fwd, b.fwd);       // -ve => aim point is behind the jet
+  return (up > 0.18) || (fw < -0.80);  // ~10deg above plane, ~143deg off the nose
+}
+const TGP_FOV={1:8,2:5,3:3,4:1.5};      // zoom stage -> field of view (deg); higher stage = tighter zoom
+/* a small compound of 2-5 boxes (a main structure + satellites), sized off the
+   target's overall geometry. Generated once per target and cached on obj._cluster
+   so it's stable frame-to-frame but distinct per contact. */
+function mkCluster(g){
+  const n = 2 + (Math.random()*4|0);                       // 2..5 boxes
+  const boxes = [{ dx:0, dy:0, l:g.l*0.85, w:g.w*0.85, h:g.h, rot:0 }];   // main structure
+  for (let i=1;i<n;i++){
+    boxes.push({
+      dx: rrange(-g.l*0.7, g.l*0.7),
+      dy: rrange(-g.w*0.8, g.w*0.8),
+      l:  g.l*rrange(0.2,0.55),
+      w:  g.w*rrange(0.25,0.7),
+      h:  g.h*rrange(0.3,1.15),
+      rot: rrange(0, Math.PI),
+    });
+  }
+  return boxes;
+}
+PAGES.TGP={
+  render(m,ctx){
+    const W=m.W,H=m.H,PAD=20, vw=W-2*PAD, vh=H-2*PAD-22, x0=PAD, y0=PAD;
+    const cx=W/2, cy=y0+vh/2;
+    const desig=world.designated || !!world.airLock || !!world.gndLock;
+    const whot = m.tgpPol!=='BHOT';
+    const gray = h => { const v=Math.round(255*clamp(whot?h:1-h,0,1)); return 'rgb('+v+','+v+','+v+')'; };
+
+    ctx.save(); ctx.beginPath(); ctx.rect(x0,y0,vw,vh); ctx.clip();
+    let masked=false, gimbal=false, S=null, proj=null, f=0;
+    if (false){                              // always render the sightline (boresight when not designated)
+      ctx.fillStyle='#02160b'; ctx.fillRect(x0,y0,vw,vh);
+    } else {
+      S = tgpSensor();
+      gimbal = tgpGimbal(S);
+      const fov=(TGP_FOV[m.tgpZoom||2]||5)*DEG;
+      f=(vh/2)/Math.tan(fov/2);
+      proj=(P)=>{ const r=vsub(P,S.eye); const cz=vdot(r,S.fwd); if(cz<=1)return null;
+        return { x:cx+f*vdot(r,S.right)/cz, y:cy-f*vdot(r,S.up)/cz, z:cz }; };
+      if (gimbal){
+        ctx.fillStyle=gray(0.18); ctx.fillRect(x0,y0,vw,vh);   // can't slew there
+      } else {
+        // sky / ground split (grayscale) from the sensor horizon
+        ctx.fillStyle=gray(0.45); ctx.fillRect(x0,y0,vw,vh);
+        const rz=S.right.z, uz=S.up.z, fz=S.fwd.z;
+        if (Math.abs(uz)>1e-3){
+          const yAt=sx=>{ const ccx=sx-cx; const ccy=-(ccx*rz+f*fz)/uz; return cy-ccy; };
+          const yL=yAt(x0), yR=yAt(x0+vw);
+          ctx.fillStyle=gray(0.12); ctx.beginPath();
+          if (uz>0){ ctx.moveTo(x0,y0-2); ctx.lineTo(x0+vw,y0-2); ctx.lineTo(x0+vw,yR); ctx.lineTo(x0,yL); }
+          else      { ctx.moveTo(x0,y0+vh+2); ctx.lineTo(x0+vw,y0+vh+2); ctx.lineTo(x0+vw,yR); ctx.lineTo(x0,yL); }
+          ctx.closePath(); ctx.fill();
+        }
+        // terrain relief around the aim point as shaded polygons, painted
+        // far->near so nearer ground occludes what's behind it (like the
+        // out-the-window view). Heights are cached in world space (no per-frame noise).
+        // patch widens with slant range (quantised to keep the height cache stable)
+        // so when we're high / overhead the target we still see a sensible spread
+        // of ground rather than a tiny square.
+        const slant = Math.max(300, vlen(vsub(S.tp, S.eye)));
+        const N=20, span=clamp(Math.round(slant*0.28/400)*400, 1800, 6500);
+        let tz=m._tgpZ;
+        if (!tz || tz.tx!==S.tp.x || tz.ty!==S.tp.y || tz.span!==span || tz.N!==N || tz.gen!==world.terrainGen){
+          const Z=new Float32Array(N*N), GX=new Float32Array(N*N), GY=new Float32Array(N*N);
+          for (let j=0;j<N;j++) for (let i=0;i<N;i++){
+            const gx=S.tp.x+((i/(N-1)-0.5)*2)*span, gy=S.tp.y+((j/(N-1)-0.5)*2)*span, k=j*N+i;
+            GX[k]=gx; GY[k]=gy; Z[k]=terrainH(gx,gy);
+          }
+          tz=m._tgpZ={tx:S.tp.x,ty:S.tp.y,span,N,Z,GX,GY,gen:world.terrainGen};
+        }
+        const PP=new Array(N*N);
+        for (let k=0;k<N*N;k++) PP[k]=proj({x:tz.GX[k],y:tz.GY[k],z:tz.Z[k]});
+        const quads=[];
+        for (let j=0;j<N-1;j++) for (let i=0;i<N-1;i++){
+          const k=j*N+i, a=PP[k], b2=PP[k+1], c2=PP[k+N+1], d2=PP[k+N];
+          if(!a||!b2||!c2||!d2) continue;
+          const hh=(tz.Z[k]+tz.Z[k+1]+tz.Z[k+N+1]+tz.Z[k+N])*0.25;
+          const mx=(tz.GX[k]+tz.GX[k+1])*0.5, my=(tz.GY[k]+tz.GY[k+1])*0.5;
+          const slope=(tz.Z[k+1]-tz.Z[k])+(tz.Z[k+N]-tz.Z[k]);
+          quads.push({a,b:b2,c:c2,d:d2,hh,slope,dist:Math.hypot(mx-S.eye.x,my-S.eye.y)});
+        }
+        quads.sort((q1,q2)=>q2.dist-q1.dist);
+        for (const q of quads){
+          const sh = clamp(0.55 + q.slope*0.006, 0.6, 1.3);
+          const bb = clamp((0.26 + clamp(q.hh/TERRAIN_PEAK,0,1)*0.5) * sh, 0.08, 0.82);
+          ctx.fillStyle=gray(bb);
+          ctx.beginPath(); ctx.moveTo(q.a.x,q.a.y); ctx.lineTo(q.b.x,q.b.y);
+          ctx.lineTo(q.c.x,q.c.y); ctx.lineTo(q.d.x,q.d.y); ctx.closePath(); ctx.fill();
+        }
+        // hot targets + ID boxes (masked if a ridge blocks line-of-sight)
+        masked = tgpMasked(S.eye, S.tp);
+        const boxIt=(p,half,col,label)=>{
+          ctx.strokeStyle=col; ctx.lineWidth=1; ctx.strokeRect(p.x-half,p.y-half,half*2,half*2);
+          if (label){ ctx.fillStyle=col; ctx.font='8px "Courier New"'; ctx.textAlign='left'; ctx.fillText(label,p.x+half+2,p.y+3); }
+        };
+        // draw a ground target as a small COMPOUND of 2-5 projected boxes (a main
+        // structure + satellites) so it reads as an installation, not a single cube.
+        // Every box is projected through the live TGP camera, so the whole cluster
+        // shifts perspective as the look-angle and range change.
+        const drawGeom=(obj, rot, hot, col, label)=>{
+          const g=obj.geom||{l:10,w:6,h:5};
+          if (!obj._cluster) obj._cluster = mkCluster(g);
+          const edge = whot ? 'rgba(0,0,0,0.85)' : 'rgba(255,255,255,0.9)';
+          const cR=Math.cos(rot), sR=Math.sin(rot);
+          const drawn=[]; const allPts=[];
+          for (const bx of obj._cluster){
+            const ox = obj.x + (cR*bx.dx - sR*bx.dy);          // box centre, offset rotated into the target frame
+            const oy = obj.y + (sR*bx.dx + cR*bx.dy);
+            const z = terrainH(ox,oy);
+            const r = rot + bx.rot, c=Math.cos(r), si=Math.sin(r), hl=bx.l/2, hw=bx.w/2;
+            const corn=[{x:ox+c*hl-si*hw,y:oy+si*hl+c*hw},{x:ox+c*hl+si*hw,y:oy+si*hl-c*hw},
+                        {x:ox-c*hl+si*hw,y:oy-si*hl-c*hw},{x:ox-c*hl-si*hw,y:oy-si*hl+c*hw}];
+            const pc=corn.map(q=>proj({x:q.x,y:q.y,z})); if(pc.some(p=>!p)) continue;
+            const roof=corn.map(q=>proj({x:q.x,y:q.y,z:z+bx.h}));
+            drawn.push({dist:Math.hypot(ox-S.eye.x,oy-S.eye.y), pc, roof});
+            pc.forEach(p=>allPts.push(p)); if(!roof.some(p=>!p)) roof.forEach(p=>allPts.push(p));
+          }
+          if (!drawn.length) return;
+          drawn.sort((a,b)=>b.dist-a.dist);                    // painter: far boxes first
+          const poly=(pts,fill)=>{ ctx.fillStyle=fill; ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y);
+            for(let k=1;k<4;k++) ctx.lineTo(pts[k].x,pts[k].y); ctx.closePath(); ctx.fill();
+            ctx.strokeStyle=edge; ctx.lineWidth=1; ctx.stroke(); };
+          for (const d of drawn){
+            poly(d.pc, gray(hot));
+            if(!d.roof.some(p=>!p)){
+              poly(d.roof, gray(clamp(hot+0.08,0,1)));
+              ctx.strokeStyle=col; ctx.lineWidth=1; ctx.beginPath();
+              for(let k=0;k<4;k++){ ctx.moveTo(d.pc[k].x,d.pc[k].y); ctx.lineTo(d.roof[k].x,d.roof[k].y); } ctx.stroke();
+            }
+          }
+          const xs=allPts.map(p=>p.x), ys=allPts.map(p=>p.y);
+          const cxp=(Math.min(...xs)+Math.max(...xs))/2, cyp=(Math.min(...ys)+Math.max(...ys))/2;
+          ctx.fillStyle=gray(whot?1:0); ctx.beginPath(); ctx.arc(cxp,cyp,2.2,0,2*Math.PI); ctx.fill();
+          const half=Math.max(9,(Math.max(...xs)-Math.min(...xs))/2+4,(Math.max(...ys)-Math.min(...ys))/2+4);
+          boxIt({x:cxp,y:cyp}, half, col, label);
+        };
+        if (!masked && S.dom!=='AIR'){
+          for (const b of world.target.buildings){ if(b.destroyed)continue;
+            const z=terrainH(b.x,b.y); const pb=proj({x:b.x,y:b.y,z}); const pt=proj({x:b.x,y:b.y,z:z+b.h});
+            if(!pb||!pt)continue; const wpx=Math.max(3,f*b.w/pb.z), hpx=Math.max(3,pb.y-pt.y);
+            ctx.fillStyle=gray(b.primary?1.0:0.85); ctx.fillRect(pb.x-wpx/2, pb.y-hpx, wpx, hpx);
+            ctx.strokeStyle=whot?'rgba(0,0,0,0.85)':'rgba(255,255,255,0.9)'; ctx.lineWidth=1;
+            ctx.strokeRect(pb.x-wpx/2, pb.y-hpx, wpx, hpx);
+            boxIt({x:pb.x,y:pb.y-hpx/2}, Math.max(9,wpx*0.8+4), b.primary?C_RED:C_GREEN, b.primary?'TGT':null);
+          }
+          for (const v of world.hvts){ if(v.destroyed)continue; drawGeom(v, (v.geom&&v.geom.rot)||0, 0.92, C_RED, 'HVT'); }
+          for (const gm of world.groundMovers){ if(gm.destroyed||gm.underground)continue;
+            drawGeom(gm, gm.psi||0, gm.kind==='TEL'?0.96:0.85, gm.kind==='TEL'?C_RED:C_ORG, gm.kind==='TEL'?'TEL':null); }
+          // ground structures (bunkers / facilities)
+          for (const s of world.structures){ if(s.destroyed||s.underground)continue;
+            drawGeom(s, (s.geom&&s.geom.rot)||0, 0.9, C_RED, s.name||'BLDG'); }
+          // static SAM sites / launchers — give each a launcher footprint so the pod sees it
+          for (const t of world.threats){
+            if (t.destroyed || t.mobile || t.structure || t.x===undefined) continue;   // TELs via movers, structures via their own loop
+            if (!t.geom){ const g=mkGeom(['sam','radar']); t.geom={type:g.type, l:g.l*1.8, w:g.w*1.8, h:g.h*1.5, rot:g.rot}; }
+            drawGeom(t, (t.geom&&t.geom.rot)||0, (t.live===false?0.45:0.96),
+                     (t===world.gndLock||t.tracking)?C_RED:C_ORG, t.name||'SAM');
+          }
+        }
+        // air target: the SAME dart we draw out-the-window, but solid and
+        // projected through the TGP camera — so its aspect changes naturally as
+        // it manoeuvres and as our look-angle moves.
+        if (!masked && S.dom==='AIR' && world.airLock && world.airLock.hp>0){
+          const b = world.airLock;
+          const cP=Math.cos(b.psi), sP=Math.sin(b.psi);
+          const fdir={x:sP,y:cP}, rdir={x:cP,y:-sP};
+          const span=10, len=14;                              // matches render3d.drawBandits
+          const nose={x:b.x+fdir.x*len,      y:b.y+fdir.y*len,      z:b.alt};
+          const lw  ={x:b.x-fdir.x*4-rdir.x*span, y:b.y-fdir.y*4-rdir.y*span, z:b.alt};
+          const rw  ={x:b.x-fdir.x*4+rdir.x*span, y:b.y-fdir.y*4+rdir.y*span, z:b.alt};
+          const tail={x:b.x-fdir.x*8,        y:b.y-fdir.y*8,        z:b.alt};
+          const pn=proj(nose), pl=proj(lw), pr=proj(rw), pt=proj(tail);
+          if (pn&&pl&&pr&&pt){
+            ctx.fillStyle=gray(0.97);                          // solid hot return
+            ctx.beginPath();
+            ctx.moveTo(pn.x,pn.y); ctx.lineTo(pl.x,pl.y);
+            ctx.lineTo(pt.x,pt.y); ctx.lineTo(pr.x,pr.y); ctx.closePath(); ctx.fill();
+            // ID box sized to the projected extent (with a sensible minimum)
+            const xs=[pn.x,pl.x,pr.x,pt.x], ys=[pn.y,pl.y,pr.y,pt.y];
+            const bx=Math.min(...xs), by=Math.min(...ys), ex=Math.max(...xs), ey=Math.max(...ys);
+            const ccx=(bx+ex)/2, ccy=(by+ey)/2, half=Math.max(8,(ex-bx)/2+4,(ey-by)/2+4);
+            const col=(b.kind==='HOSTILE')?C_RED:C_YEL;
+            ctx.strokeStyle=col; ctx.lineWidth=1.2; ctx.strokeRect(ccx-half,ccy-half,half*2,half*2);
+            ctx.fillStyle=col; ctx.font='8px "Courier New"'; ctx.textAlign='left';
+            ctx.fillText(b.kind||'AIR', ccx+half+3, ccy-2);
+            ctx.fillText(Math.round(b.alt*FT/100)*100+'FT', ccx+half+3, ccy+8);
+          }
+        }
+        // explosions / hits flash on the FLIR
+        for (const e of world.effects){
+          const p=proj(e.pos); if(!p)continue;
+          const k=e.t/e.dur, r=Math.max(2, f*(6+k*40)/p.z);
+          ctx.fillStyle=gray(0.97); ctx.globalAlpha=clamp(1-k,0,1);
+          ctx.beginPath(); ctx.arc(p.x,p.y,r,0,2*Math.PI); ctx.fill(); ctx.globalAlpha=1;
+        }
+      }
+    }
+    ctx.restore();
+
+    // ---- instrument overlay (green) ----
+    ctx.strokeStyle=C_GREEN; ctx.lineWidth=1; ctx.strokeRect(x0,y0,vw,vh);
+    if (desig && !gimbal){
+      ctx.strokeStyle=C_HOT; ctx.lineWidth=1; const s=16,g=5;
+      ctx.beginPath(); ctx.moveTo(cx-s,cy);ctx.lineTo(cx-g,cy);ctx.moveTo(cx+g,cy);ctx.lineTo(cx+s,cy);
+      ctx.moveTo(cx,cy-s);ctx.lineTo(cx,cy-g);ctx.moveTo(cx,cy+g);ctx.lineTo(cx,cy+s); ctx.stroke();
+      const b = m.tgpTrack==='POINT'?13:20; ctx.strokeStyle=m.tgpTrack==='POINT'?C_HOT:C_YEL;
+      ctx.beginPath();
+      ctx.moveTo(cx-b,cy-b+5);ctx.lineTo(cx-b,cy-b);ctx.lineTo(cx-b+5,cy-b);
+      ctx.moveTo(cx+b-5,cy-b);ctx.lineTo(cx+b,cy-b);ctx.lineTo(cx+b,cy-b+5);
+      ctx.moveTo(cx+b,cy+b-5);ctx.lineTo(cx+b,cy+b);ctx.lineTo(cx+b-5,cy+b);
+      ctx.moveTo(cx-b+5,cy+b);ctx.lineTo(cx-b,cy+b);ctx.lineTo(cx-b,cy+b-5); ctx.stroke();
+      if (m.laser){ ctx.strokeStyle=C_RED; ctx.lineWidth=1.4; ctx.beginPath(); ctx.arc(cx,cy,b+6,0,2*Math.PI); ctx.stroke(); }
+      if (masked){ ctx.fillStyle=C_YEL; ctx.font='bold 12px "Courier New"'; ctx.textAlign='center'; ctx.fillText('\u2014 MASKED \u2014', cx, cy-b-8); }
+    } else if (desig && gimbal){
+      ctx.fillStyle=C_RED; ctx.font='bold 13px "Courier New"'; ctx.textAlign='center';
+      ctx.fillText('GIMBAL LIMIT', cx, cy); ctx.font='9px "Courier New"';
+      ctx.fillStyle=C_YEL; ctx.fillText('pod cannot slew to target', cx, cy+16);
+    } else {
+      // boresight: a plain cross over the live ground scene (no auto-designation)
+      ctx.strokeStyle=C_DIM; ctx.lineWidth=1; const s=14,g=5;
+      ctx.beginPath(); ctx.moveTo(cx-s,cy);ctx.lineTo(cx-g,cy);ctx.moveTo(cx+g,cy);ctx.lineTo(cx+s,cy);
+      ctx.moveTo(cx,cy-s);ctx.lineTo(cx,cy-g);ctx.moveTo(cx,cy+g);ctx.lineTo(cx,cy+s); ctx.stroke();
+      ctx.fillStyle=C_DIM; ctx.textAlign='center'; ctx.font='9px "Courier New"';
+      ctx.fillText('BORE \u2014 V / DESIG to lock', cx, y0+vh-8);
+    }
+    // header + status
+    ctx.fillStyle=C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left';
+    const _trk = (world.gndLock && !world.gndLock.destroyed && world.gndLock.spd!==undefined);
+    ctx.fillText('TGP '+(desig?(gimbal?'GMBL':(_trk?'TRK':(m.tgpTrack==='POINT'?'PT':'AREA'))):'STBY'), 6, 14);
+    ctx.textAlign='right'; ctx.font='9px "Courier New"';
+    ctx.fillText('Z'+(m.tgpZoom||2)+' '+(TGP_FOV[m.tgpZoom||2]||5)+'\u00b0  '+(whot?'WHOT':'BHOT'), W-6, 14);
+    const _aim=tgpAimPoint();
+    const sr=distTo(_aim.x,_aim.y)/NM;
+    const horiz=distTo(_aim.x,_aim.y), dep=Math.atan2(world.ac.pos.z-_aim.z, Math.max(1,horiz))*180/Math.PI;
+    ctx.font='9px "Courier New"'; ctx.textAlign='left';
+    ctx.fillText('SR '+sr.toFixed(1)+'NM  DEP '+dep.toFixed(0)+'\u00b0',6,H-12);
+    ctx.textAlign='center'; ctx.fillStyle=(_aim.name==='TGT DESTROYED')?C_RED:(_aim.dom==='AIR'?C_YEL:C_GREEN);
+    ctx.fillText(_aim.name,W/2,H-12);
+    ctx.textAlign='right'; ctx.fillStyle=m.laser?C_RED:C_DIM;
+    ctx.fillText(m.laser?'LZR 1688 \u25cf':'LZR 1688',W-6,H-12);
+  }
+};
+
+/* ---------- DED : up-front controls / data entry (was the ICP) ---------- */
+let DED_PAGE = 'CNI';     // CNI | STPT | BIT | TUNE
+function dHdg(rad){ let d=(wrap2pi(rad)*180/Math.PI); d=((d%360)+360)%360; return String(Math.round(d)).padStart(3,'0'); }
+function dNum(n,w){ return String(Math.round(n)).padStart(w,'0'); }
+function dlFmt(e){ e=String(e||''); return e.length<=3 ? e : e.slice(0,3)+'.'+e.slice(3,6); }
+
+PAGES.DED={
+  render(m,ctx){
+    const W=m.W,H=m.H,ac=world.ac;
+    ctx.fillStyle=C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left';
+    ctx.fillText('DED \u2217'+DED_PAGE+'\u2217', 6, 14);
+    ctx.strokeStyle=C_DIM; ctx.beginPath(); ctx.moveTo(8,20); ctx.lineTo(W-8,20); ctx.stroke();
+    if (DED_PAGE==='TUNE'){                       // touch keypad for the datalink frequency
+      const pad=10, top=26;
+      const sx=pad, sy=top, sw=W-2*pad, sh=24;
+      ctx.strokeStyle=C_GREEN; ctx.lineWidth=1; ctx.strokeRect(sx,sy,sw,sh);
+      ctx.fillStyle=C_HOT; ctx.font='bold 15px "Courier New"'; ctx.textAlign='left';
+      ctx.fillText(world.dlEntry?dlFmt(world.dlEntry):'___.__', sx+8, sy+17);
+      ctx.fillStyle=C_DIM; ctx.font='8px "Courier New"'; ctx.textAlign='right';
+      ctx.fillText('DL FREQ', sx+sw-6, sy+10);
+      const gy=sy+sh+16, gh=H-pad-gy, cols=5, rows=4, cw=(W-2*pad)/cols, rh=gh/rows;
+      ctx.fillStyle=C_DIM; ctx.font='8px "Courier New"'; ctx.textAlign='left';
+      ctx.fillText('E3 '+DL_CHANNELS[0].freq+'  E2 '+DL_CHANNELS[1].freq+'   TUNED '+(world.datalinkTuned||'---'), pad, gy-3);
+      const keys=[];
+      const commit=()=>{ if((world.dlEntry||'').length>=4){ world.datalinkTuned=dlFmt(world.dlEntry); banner('DL FREQ '+world.datalinkTuned,1.4); } };
+      const dig=d=>()=>{ if((world.dlEntry||'').length<6) world.dlEntry=(world.dlEntry||'')+d; };
+      const place=(c,r,label,act,hot)=>{ const bx=pad+c*cw+2, by=gy+r*rh+2, bw=cw-4, bh=rh-4;
+        keys.push({x:bx,y:by,w:bw,h:bh,act});
+        ctx.strokeStyle=hot?C_HOT:C_GREEN; ctx.lineWidth=hot?2:1; ctx.strokeRect(bx,by,bw,bh);
+        ctx.fillStyle=hot?C_HOT:C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='center';
+        ctx.fillText(label, bx+bw/2, by+bh/2+4); };
+      const numRows=[['1','2','3'],['4','5','6'],['7','8','9'],['CLR','0','ENT']];
+      for(let r=0;r<4;r++) for(let c=0;c<3;c++){ const lab=numRows[r][c];
+        if(lab==='CLR') place(c,r,'CLR',()=>{ world.dlEntry=''; });
+        else if(lab==='ENT') place(c,r,'ENT',commit,true);
+        else place(c,r,lab,dig(lab)); }
+      place(3,0,'GSPD',()=>{});  place(4,0,'CH M',()=>{ const cur=dlFmt(world.dlEntry);
+        const idx=DL_CHANNELS.findIndex(c=>c.freq===cur); const nx=DL_CHANNELS[(idx+1)%DL_CHANNELS.length];
+        world.dlEntry=nx.freq.replace('.',''); });
+      place(3,1,'TGT',()=>{});   place(4,1,'TOT',()=>{});
+      place(3,2,'INSERT',commit,true); place(4,2,'DELETE',()=>{ world.dlEntry=(world.dlEntry||'').slice(0,-1); });
+      place(3,3,'GRID',()=>{});  place(4,3,'CNI',()=>{ DED_PAGE='CNI'; });
+      m._dedKeys=keys;
+      return;
+    }
+    ctx.font='12px "Courier New"';
+    const x0=14, x1=W*0.54, y0=40, lh=22;
+    const row=(i,a,b,c,d)=>{ const y=y0+i*lh;
+      ctx.textAlign='left';
+      ctx.fillStyle=C_DIM;   ctx.fillText(a,x0,y);
+      ctx.fillStyle=C_GREEN; ctx.fillText(b,x0+58,y);
+      if(c){ ctx.fillStyle=C_DIM;   ctx.fillText(c,x1,y); }
+      if(d){ ctx.fillStyle=C_GREEN; ctx.fillText(d,x1+58,y); }
+    };
+    if (DED_PAGE==='CNI'){
+      row(0,'UHF','305.00','STPT',dNum(world.steerpoint,2));
+      row(1,'VHF','127.50','MODE',world.masterMode);
+      row(2,'HDG',dHdg(ac.psi),'CAS',dNum(ac.tas*KT,3));
+      row(3,'ALT',dNum(ac.pos.z*FT,5),'',''); 
+      ctx.fillStyle = world.masterArm==='ARM'?C_RED:world.masterArm==='SIM'?C_YEL:C_GREEN;
+      ctx.textAlign='left'; ctx.fillText('ARM', x1, y0+3*lh); ctx.fillText(world.masterArm, x1+58, y0+3*lh);
+      row(4,'TIME',fmtMMSS(world.t),'G',ac.g.toFixed(1));
+    } else if (DED_PAGE==='STPT'){
+      const wp=curWP();
+      const brg=bearingTo(wp.x,wp.y)*180/Math.PI;
+      const dnm=distTo(wp.x,wp.y)/NM;
+      const ete=ac.tas>20?distTo(wp.x,wp.y)/ac.tas:0;
+      row(0,'STPT',dNum(world.steerpoint,2)+' '+wp.name,'','');
+      row(1,'BRG',dNum(((brg%360)+360)%360,3)+'\u00b0','','');
+      row(2,'RNG',dnm.toFixed(1)+' NM','','');
+      row(3,'ETE',fmtMMSS(ete),'','');
+      row(4,'ELEV',dNum(wp.alt||0,5)+'FT','','');
+      ctx.fillStyle=C_DIM; ctx.textAlign='center'; ctx.font='9px "Courier New"';
+      ctx.fillText('\u25b2/\u25bc OSB to change steerpoint', W/2, H-26);
+    } else { // BIT (system + mission)
+      ctx.font='9px "Courier New"';
+      const rows=Math.ceil(world.bit.length/2), colW=(W-20)/2;
+      for (let i=0;i<world.bit.length;i++){ const r=i%rows,c=(i/rows|0);
+        const x=12+c*colW, y=30+r*13, it=world.bit[i];
+        ctx.fillStyle=C_GREEN; ctx.textAlign='left'; ctx.fillText(it.name,x,y);
+        ctx.fillStyle=it.s==='GO'?C_GREEN:C_RED; ctx.textAlign='right'; ctx.fillText(it.s,x+colW-10,y); }
+      const my=30+rows*13+10;
+      ctx.fillStyle=C_HOT; ctx.font='bold 9px "Courier New"'; ctx.textAlign='left'; ctx.fillText('MISSION',12,my);
+      ctx.strokeStyle=C_HOT; ctx.beginPath(); ctx.moveTo(8,my+3); ctx.lineTo(W-8,my+3); ctx.stroke();
+      const lines=[['MSN','STRIKE-074'],['CALL','VIPER 11'],['DEP','KEDW'],
+        ['TGT',world.target.destroyed?'DESTROYED':'ACTIVE'],['ARM',world.masterArm],
+        ['MODE',world.masterMode],['STPT',String(world.steerpoint)],['INTEG',Math.round(ac.integrity)+'%']];
+      ctx.fillStyle=C_GREEN; ctx.font='9px "Courier New"';
+      for (let i=0;i<lines.length;i++){ const r=i%4,c=(i/4|0), x=12+c*(W/2-12), y=my+16+r*13;
+        ctx.textAlign='left'; ctx.fillText(lines[i][0],x,y); ctx.fillText(lines[i][1],x+50,y); }
+    }
+  }
+};
+
+/* ---------- DATALINK : a sensor whose data comes from the E-3 / E-2 ---------- */
+PAGES.DLNK={
+  render(m,ctx){
+    const ac=world.ac, W=m.W, H=m.H;
+    const src=datalinkSource(); const live=!!src;
+    ctx.fillStyle=live?'#5bd6ff':C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left';
+    ctx.fillText(live ? (src.tag+'-DATALINK') : 'DATALINK', 6,14);
+    ctx.textAlign='right'; ctx.fillStyle=live?'#5bd6ff':C_RED; ctx.fillText(live?'LINK UP':'NO LINK', W-6,14);
+    if (!live){
+      ctx.fillStyle=C_DIM; ctx.textAlign='center'; ctx.font='12px "Courier New"';
+      ctx.fillText('NO DATALINK', W/2, 60);
+      ctx.font='9px "Courier New"'; ctx.fillText('TUNE A CHANNEL ON THE DED (CH M)', W/2, 80);
+      let yy=104;
+      for (const ch of DL_CHANNELS){
+        let dr=Infinity;
+        for (const f of world.friendlies){ if(f.alive && f.tag===ch.tag){ dr=Math.min(dr, Math.hypot(f.x-ac.pos.x,f.y-ac.pos.y)); } }
+        const airborne=isFinite(dr);
+        ctx.fillStyle = (world.datalinkTuned===ch.freq)?'#ffd24d':(airborne?'#5bd6ff':C_DIM);
+        const rngTxt = airborne ? ((dr/NM).toFixed(0)+'NM'+(dr<60000?'':' OUT')) : 'OFF STATION';
+        ctx.fillText(ch.tag+'  '+ch.type+'   '+ch.freq+'   '+rngTxt, W/2, yy); yy+=16;
+      }
+      ctx.fillStyle=C_DIM; ctx.fillText('TUNED  '+(world.datalinkTuned||'---'), W/2, yy+8);
+      ctx.font='8px "Courier New"'; ctx.fillText('B1 \u2192 DED TUNE KEYPAD', W/2, H-12);
+      return;
+    }
+    // north-up link picture, wider than own sensors (the AWACS sees it all)
+    const cx=W/2, cy=H*0.44, Rpx=Math.min(W,H)*0.38, rng=(m.dlRange||80), scale=Rpx/rng;
+    const toXY=(wx,wy)=>{ const dx=(wx-ac.pos.x)/NM, dy=(wy-ac.pos.y)/NM; return {x:cx+dx*scale, y:cy-dy*scale, d:Math.hypot(dx,dy)}; };
+    ctx.strokeStyle=C_DIM; ctx.lineWidth=1; for(let i=1;i<=2;i++){ ctx.beginPath(); ctx.arc(cx,cy,Rpx*i/2,0,2*Math.PI); ctx.stroke(); }
+    ctx.fillStyle=C_DIM; ctx.font='8px "Courier New"'; ctx.textAlign='left';
+    ctx.fillText((rng/2|0)+'', cx+3, cy-Rpx/2+9); ctx.fillText(rng+'', cx+3, cy-Rpx+9);
+    ctx.textAlign='center'; ctx.fillText('N',cx,cy-Rpx-2);
+    // emitters (rings) from the link
+    for(const th of world.threats){ if(th.destroyed||!th.live)continue; const p=toXY(th.x,th.y); if(p.d>rng)continue;
+      ctx.strokeStyle='rgba(91,214,255,0.55)'; ctx.beginPath(); ctx.arc(p.x,p.y,Math.max(3,th.radius/NM*scale),0,2*Math.PI); ctx.stroke();
+      ctx.fillStyle='#5bd6ff'; ctx.fillRect(p.x-2,p.y-2,4,4); }
+    // ground movers / TELs
+    for(const gm of world.groundMovers){ if(gm.destroyed||gm.underground)continue; const p=toXY(gm.x,gm.y); if(p.d>rng)continue;
+      ctx.fillStyle=gm.kind==='TEL'?'#ff7a4d':'#ffd9a8'; ctx.fillRect(p.x-2,p.y-2,4,4); }
+    // underground facilities
+    for(const st of world.structures){ if(st.destroyed)continue; const p=toXY(st.x,st.y); if(p.d>rng)continue;
+      ctx.strokeStyle=st.hostile?C_RED:'#7fe0ff'; ctx.beginPath(); ctx.moveTo(p.x,p.y-4);ctx.lineTo(p.x+4,p.y);ctx.lineTo(p.x,p.y+4);ctx.lineTo(p.x-4,p.y);ctx.closePath(); ctx.stroke(); }
+    // HVTs
+    for(const v of world.hvts){ if(v.destroyed)continue; const p=toXY(v.x,v.y); if(p.d>rng)continue;
+      ctx.strokeStyle=C_RED; ctx.lineWidth=1.2; ctx.strokeRect(p.x-3,p.y-3,6,6); }
+    // bandits
+    for(const bd of world.bandits){ if(bd.hp<=0)continue; const p=toXY(bd.x,bd.y); if(p.d>rng)continue;
+      ctx.strokeStyle=bd.kind==='HOSTILE'?C_RED:C_YEL; ctx.lineWidth=1.2;
+      ctx.beginPath(); ctx.moveTo(p.x-4,p.y+3);ctx.lineTo(p.x,p.y-4);ctx.lineTo(p.x+4,p.y+3); ctx.stroke(); }
+    // strike target + bullseye + waypoints
+    if(!world.target.destroyed){ const p=toXY(world.target.x,world.target.y);
+      ctx.strokeStyle=C_YEL; ctx.lineWidth=1.3; ctx.beginPath(); ctx.arc(p.x,p.y,6,0,2*Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p.x-8,p.y);ctx.lineTo(p.x+8,p.y);ctx.moveTo(p.x,p.y-8);ctx.lineTo(p.x,p.y+8); ctx.stroke(); }
+    { const p=toXY(world.bullseye.x,world.bullseye.y); ctx.strokeStyle=C_DIM;
+      ctx.beginPath(); ctx.arc(p.x,p.y,5,0,2*Math.PI); ctx.stroke(); ctx.beginPath(); ctx.arc(p.x,p.y,1.5,0,2*Math.PI); ctx.stroke(); }
+    // ownship + the source AWACS
+    ctx.strokeStyle=C_HOT; ctx.lineWidth=1.3; ctx.beginPath(); ctx.moveTo(cx,cy-6);ctx.lineTo(cx+4,cy+5);ctx.lineTo(cx,cy+2);ctx.lineTo(cx-4,cy+5);ctx.closePath(); ctx.stroke();
+    if(src){ const p=toXY(src.x,src.y); if(p.d<=rng){ ctx.fillStyle='#5bd6ff'; ctx.beginPath(); ctx.arc(p.x,p.y,4,0,2*Math.PI); ctx.fill();
+      ctx.font='7px "Courier New"'; ctx.textAlign='left'; ctx.fillText(src.tag+' '+src.type,p.x+6,p.y+2); } }
+    // data readout (targeting / counts), sourced from the link
+    ctx.textAlign='left'; ctx.font='8px "Courier New"'; ctx.fillStyle='#5bd6ff';
+    const aim=tgpAimPoint();
+    const brg=((bearingTo(aim.x,aim.y)*180/Math.PI%360)+360)%360, rn=distTo(aim.x,aim.y)/NM;
+    const nb=world.bandits.filter(b=>b.hp>0).length;
+    const ne=world.threats.filter(t=>!t.destroyed&&t.live).length;
+    const ng=world.groundMovers.filter(g=>!g.destroyed&&!g.underground).length;
+    const bb=((bearingTo(world.bullseye.x,world.bullseye.y)*180/Math.PI%360)+360)%360;
+    let yy=H-44;
+    ctx.fillText('SRC '+(src?(src.tag+' '+src.type+'  '+src.freq):'-'), 8, yy); yy+=11;
+    ctx.fillText('TGT BRG '+String(Math.round(brg)).padStart(3,'0')+'\u00b0 RNG '+rn.toFixed(1)+'NM  '+aim.name, 8, yy); yy+=11;
+    ctx.fillText('AIR '+nb+'   EMITTERS '+ne+'   GMT '+ng, 8, yy); yy+=11;
+    ctx.fillText('BULLS '+String(Math.round(bb)).padStart(3,'0')+'\u00b0 '+(distTo(world.bullseye.x,world.bullseye.y)/NM).toFixed(0)+'NM', 8, yy);
+    ctx.textAlign='right'; ctx.fillText((m.dlRange||80)+'NM', W-6, H-12);
+  }
+};
+
+/* ---------- store/mode helpers ---------- */
+function selectStation(id){ world.selectedStation=id; world.stations.forEach(s=>s.sel=(s.id===id)); refreshAllMfd(); }
+function cycleArm(){ world.masterArm = world.masterArm==='SAFE'?'ARM':world.masterArm==='ARM'?'SIM':'SAFE'; refreshAllMfd(); banner('M-ARM '+world.masterArm,1); }
+function cycleMode(){ const M=['NAV','A-A','A-G','DGFT']; world.masterMode=M[(M.indexOf(world.masterMode)+1)%M.length]; refreshAllMfd(); banner(world.masterMode,1); }
