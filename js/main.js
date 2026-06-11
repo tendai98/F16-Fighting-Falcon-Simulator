@@ -236,7 +236,7 @@ const HELP_REF = {
       ['HAD', 'HARM Attack Display \u2014 live emitters by bearing / lethality. Tap one to lock it for HARM AND slew the TGP onto it.'],
       ['DATALINK', 'Off-board picture from an E-3 / E-2 AWACS. Tune the DED to a channel for that aircraft\u2019s 80NM picture.'],
       ['RWR', 'Radar Warning \u2014 HUD / audio cue when a SAM tracks or launches.'],
-      ['EW / ECM POD', 'Jams a SAM\u2019s scan band so it can\u2019t track you. Spreading the pod over more bands weakens each (burn-through closer in); flying close burns through; powerful SAMs frequency-hop after sustained jamming, so you must re-acquire. Max 3 jam channels.'],
+      ['EW / ECM POD', 'Spectrum jammer. Each SAM radiates on fixed frequencies (peaks on the ECM page). Lock up to 8 of them into jam slots; a SAM is suppressed only when EVERY one of its peaks is covered AND you\u2019re outside its burn-through range. Spreading the pod over more slots weakens each (burn-through sooner), and capable SAMs frequency-hop \u2014 so jam only what you need and re-lock hops.'],
       ['THREAT/EWS', 'Page that plots inbound SAMs, each missile\u2019s track and the launch point it came from. Tap a launch point to slew the TGP / HARM onto that launcher.'],
     ]],
   ],
@@ -262,7 +262,7 @@ const HELP_REF = {
       ['DED', 'Data Entry \u2014 CNI, steerpoints, BIT, and the TUNE keypad.'],
       ['DLNK', 'Datalink picture (reached from the DED). L1-L4 zoom.'],
       ['THR', 'Threat/EWS \u2014 inbound-missile tracks + launch points (HSD \u2192 B5). Tap a launch point/emitter to designate it.'],
-      ['ECM', 'EW pod page (HSD \u2192 B4). Lists SAM scan bands; tap an emitter to jam its band. B1 ECM on/off, B2 clears.'],
+      ['ECM', 'Spectrum analyzer (HSD \u2192 B4). Peaks = SAM radar frequencies (taller = closer/stronger). Tap a peak to lock/clear its jam slot, or slide the \u25c4\u25ba cursor and press SEL. AUTO fills from the strongest peaks. B1 ECM on/off, B2 clears all slots. 8 slots max.'],
     ]],
     ['OSB BUTTONS', [
       ['TOP  T1-T5', 'Switch MFD pages.'],
@@ -602,7 +602,7 @@ function updateTutorial(dt){
 }
 
 /* ---- scenario setups ---- */
-function tutResetEZ(){ world.difficulty=0; restartMission(); world._tutorial=true; }
+function tutResetEZ(){ world.difficulty=0; restartMission(); world._tutorial=true; world._tutFire=false; }
 /* targeting lessons must NOT sit inside a SAM ring (the RWR alone confuses a new
    pilot) — strip the air defences so they can learn the strike loop in peace */
 function clearThreats(){
@@ -652,12 +652,12 @@ function setupSAR(){ tutResetEZ(); clearThreats();
   world.selectedStation=5; world.stations.forEach(st=>st.sel=(st.id===5));
 }
 function setupSEAD(){ tutResetEZ();
-  isolateSAM('SA-6', 1.30, 3500);                   // start OUTSIDE the ring; lock + HARM as you fly in
+  isolateSAM('SA-6', 1.70, 3500);                   // start well OUTSIDE the ring; lock + HARM as you fly in
   world.masterMode='NAV'; world.masterArm='SAFE';
   world.selectedStation=7; world.stations.forEach(st=>st.sel=(st.id===7));   // HARM
 }
 function setupDefense(){ tutResetEZ();
-  isolateSAM('SA-6', 1.25, 3500);                   // start OUTSIDE; fly in to draw a shot
+  isolateSAM('SA-6', 1.60, 3500);                   // start well OUTSIDE; fly in to draw a shot
   world.masterMode='NAV'; world.masterArm='SAFE';
   world.selectedStation=1; world.stations.forEach(st=>st.sel=(st.id===1));
   world.ac.flares=30;
@@ -677,9 +677,17 @@ function setupDatalink(){ tutResetEZ(); clearThreats();
   world.masterMode='NAV'; world.masterArm='SAFE';
 }
 function setupECM(){ tutResetEZ();
-  isolateSAM('SA-3', 1.20, 3500);                   // basic single-band SAM; start OUTSIDE and jam as you fly in
+  isolateSAM('SA-3', 1.90, 3500);                   // basic single-band SAM; start well OUTSIDE, configure on the way in
   world.masterMode='NAV'; world.masterArm='SAFE';
   world.selectedStation=7; world.stations.forEach(st=>st.sel=(st.id===7));
+}
+function setupECMStrike(){ tutResetEZ();
+  isolateSAM('SA-6', 2.00, 3500);                   // 2-band SAM; start far out so you can set up the jam before the ring
+  world.masterMode='NAV'; world.masterArm='SAFE';
+  world.selectedStation=7; world.stations.forEach(st=>st.sel=(st.id===7));   // HARM ready
+  world.ac.flares=30;
+  world._tutFire=true;                              // this SAM WILL shoot if you fail to jam it
+  if (MFDS.left) MFDS.left.setPage('ECM');          // spectrum up from the start
 }
 
 /* ---- lesson step lists ---- */
@@ -761,12 +769,21 @@ const L_DLNK = [
   {t:'DATALINK COMPLETE', point:null, b:'Datalink extends your awareness well past your own radar \u2014 tune it early on HARD and ACE.'},
 ];
 const L_ECM = [
-  {t:'ECM \u2014 JAMMING A SAM', point:null, b:'A basic SA-3 is ahead. It scans on a single radar band \u2014 perfect for learning to jam. You\u2019ll jam it from stand-off, then fly in and watch it burn through. Open the ECM page.'},
-  {t:'OPEN THE ECM PAGE', point:{osb:'B4',mfd:'left'}, b:'From the HSD, press B4 (ECM) to open the EW page \u2014 it lists each emitter and its scan bands.', done:()=>Object.keys(MFDS).some(k=>MFDS[k].page==='ECM')},
+  {t:'ECM \u2014 JAMMING A SAM', point:null, b:'A basic SA-3 is ahead. It radiates on a single radar frequency \u2014 perfect for learning to jam. You\u2019ll lock that frequency from stand-off, then fly in and watch it burn through. Open the ECM page.'},
+  {t:'OPEN THE ECM PAGE', point:{osb:'B4',mfd:'left'}, b:'From the HSD, press B4 (ECM) to open the spectrum analyzer \u2014 it sweeps 0\u2013100 and shows a peak for every emitter\u2019s radar frequency.', done:()=>Object.keys(MFDS).some(k=>MFDS[k].page==='ECM')},
   {t:'POD ON', key:'J', point:{osb:'B1',mfd:'left'}, b:'Switch the EW pod ON \u2014 press B1 on the ECM page (or the J key).', done:()=>world.ecm.on},
-  {t:'JAM THE EMITTER', point:{mfd:'left',screen:true,cap:'ECM \u2014 tap the emitter'}, b:'Tap the SAM\u2019s row to jam the band it\u2019s scanning. Its status flips to JAMMED and it loses you.', done:()=>world.ecm.channels.length>0},
-  {t:'WATCH BURN-THROUGH', point:{hud:'steer'}, b:'Now fly toward it. As you close, the SAM burns through the jam and reacquires you \u2014 jamming buys stand-off, not invulnerability.', live:()=>{const s=world.threats.find(t=>t.live&&t.scanBands&&world.ecm.channels.indexOf(samCurBand(t))>=0); return s?('nearest: '+(s.jammedNow?'JAMMED':'BURNED THROUGH')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>{const s=world.threats.find(t=>t.live&&t.scanBands&&world.ecm.channels.indexOf(samCurBand(t))>=0); return !!s && distTo(s.x,s.y)<ecmBurnRange(s)*1.05;}},
-  {t:'ECM COMPLETE', point:null, b:'Three rules keep it fair: only 3 jam channels; spreading them weakens each (burn-through sooner); capable SAMs frequency-hop. Use it to open a corridor, then strike or egress.'},
+  {t:'LOCK THE SA-3 FREQUENCY', point:{mfd:'left',screen:true,cap:'ECM \u2014 tap the peak'}, b:'The SA-3 is the tall peak on the spectrum. Tap it to lock its frequency into a jam slot \u2014 or slide the \u25c4\u25ba cursor onto it and press SEL. The peak turns blue (JAMMED) and it can\u2019t track you.', done:()=>{const s=world.threats.find(t=>t.live&&t.bands); return !!s && world.ecm.on && allBandsCovered(s);}},
+  {t:'WATCH BURN-THROUGH', point:{hud:'steer'}, b:'Jammed, the SA-3 can\u2019t see you \u2014 fly in. As you cross its burn-through range (an inner ring, not drawn on the HSD) it reacquires and the peak goes red. Jamming buys stand-off, not invulnerability.', live:()=>{const s=world.threats.find(t=>t.live&&t.bands); return s?('nearest: '+(emitterJammed(s)?'JAMMED':'BURNED THROUGH')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>{const s=world.threats.find(t=>t.live&&t.bands); return !!s && distTo(s.x,s.y)<ecmBurnRange(s)*1.05;}},
+  {t:'ECM COMPLETE', point:null, b:'You have 8 jam slots: a multi-band SAM (SA-6/SA-10) must have EVERY peak covered before it\u2019s suppressed, and spreading the pod over more slots weakens each, so burn-through comes sooner \u2014 jam only what you need. Capable SAMs frequency-HOP, so a peak will jump; find it and re-lock. When a SAM dies, hops a band away, or you fly out of its detection range, its peak drops and the stale jam slot frees itself \u2014 so your slots always reflect what\u2019s actually radiating. Pre-load a heavy SAM network\u2019s frequencies before you push in.'},
+];
+const L_ECMSTK = [
+  {t:'EW STRIKE \u2014 ATTACK UNDER JAMMING', point:null, b:'ECM lets you walk into a SAM ring it can\u2019t shoot through, then kill it from inside. This SA-6 uses TWO frequencies and WILL fire if you don\u2019t jam it. You start well outside its ring \u2014 set up as you close. The ECM spectrum is already up on the left MFD.'},
+  {t:'POD ON', key:'J', point:{osb:'B1',mfd:'left'}, b:'Switch the EW pod ON (J, or B1 on the ECM page) before you reach the ring.', done:()=>world.ecm.on},
+  {t:'LOCK BOTH BANDS', point:{mfd:'left',screen:true,cap:'ECM \u2014 lock BOTH peaks'}, b:'The SA-6 shows TWO peaks. Lock BOTH \u2014 tap each peak (or slide the \u25c4\u25ba cursor and press SEL). One peak isn\u2019t enough; it\u2019s suppressed only when every band is covered.', live:()=>{const s=world.threats.find(t=>t.live&&t.bands); if(!s)return''; return 'COVERED '+s.bands.filter(f=>bandCovered(f)).length+'/'+s.bands.length;}, done:()=>{const s=world.threats.find(t=>t.live&&t.bands); return !!s && world.ecm.on && allBandsCovered(s);}},
+  {t:'PENETRATE UNDER COVER', point:{hud:'steer'}, b:'Jammed, the SA-6 can\u2019t see you. Fly INTO the ring \u2014 the status holds JAMMED and it can\u2019t shoot. (If a peak hops to a new frequency, re-lock it.)', live:()=>{const s=world.threats.find(t=>t.live&&t.bands); return s?((emitterJammed(s)?'JAMMED':'EXPOSED!')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>{const s=world.threats.find(t=>t.live&&t.bands); return !!s && distTo(s.x,s.y)<s.radius*0.96 && emitterJammed(s);}},
+  {t:'ARM THE HARM', key:'B', point:{hud:'mode'}, b:'Inside the ring and still jamming. Go ARM (B) \u2014 your AGM-88 HARM is selected. Don\u2019t overfly the site: get too close and it burns through the jam.', done:()=>world.masterArm==='ARM'},
+  {t:'MAGNUM \u2014 KILL IT', key:'SPACE', point:{hud:'steer'}, b:'Fire the HARM with SPACE. It homes on the SA-6\u2019s radar \u2014 which is still radiating \u2014 and kills it while it\u2019s blind to you. MAGNUM!', done:()=>{const s=world.threats.find(t=>t.name==='SA-6'); return (!s||!s.live||s.destroyed) || world.sams.some(m=>m.kind==='HARM');}},
+  {t:'EW STRIKE COMPLETE', point:null, b:'That\u2019s the play: jam every band to deny the shot, penetrate under cover, and kill from inside the ring before burn-through reaches you. Against a network, lock only the bands you must \u2014 fewer slots keeps the pod strong and burn-through tight. Pre-load known frequencies, push in jammed, and roll the SAMs up one at a time. Each kill drops that SAM’s peak and frees its jam slots automatically.'},
 ];
 
 const LESSONS = [
@@ -778,6 +795,7 @@ const LESSONS = [
   {id:'aa',     tag:'6 \u00b7 A-A',      name:'AIR-TO-AIR \u2014 Intercept',           desc:'Lock a bandit on radar and take a missile shot.',     setup:setupAA,      steps:L_AA},
   {id:'dlnk',   tag:'7 \u00b7 DATALINK', name:'DATALINK \u2014 AWACS Picture',         desc:'Tune the datalink and read the shared picture.',      setup:setupDatalink, steps:L_DLNK},
   {id:'ecm',    tag:'8 \u00b7 ECM',      name:'ECM \u2014 Jamming an SA-3',            desc:'Jam a basic SAM\u2019s radar and learn burn-through.',    setup:setupECM,     steps:L_ECM},
+  {id:'ewstk',  tag:'9 \u00b7 EW STRIKE', name:'EW STRIKE \u2014 Attack Under Jamming',  desc:'Jam a 2-band SA-6, penetrate under cover, and HARM it from inside the ring.', setup:setupECMStrike, steps:L_ECMSTK},
 ];
 let TUT_STEPS = L_BASICS;
 let TUT = { active:false, step:0, okT:0, _paused:false, lessonTag:'', lessonName:'' };
@@ -793,7 +811,7 @@ function startLesson(id){
 }
 function endTutorial(){
   if (TUT._paused){ world.paused=false; TUT._paused=false; }
-  TUT.active=false; world._tutorial=false;
+  TUT.active=false; world._tutorial=false; world._tutFire=false;
   ['tut-panel','tut-canvas'].forEach(id=>{ const e=document.getElementById(id); if(e&&e.parentNode)e.parentNode.removeChild(e); });
   banner('TRAINING COMPLETE \u2014 fly free',3);
 }

@@ -348,7 +348,7 @@ function updateThreats(dt){
     if (inRing){
       anyTrack=true;
       th._dwell = (th._dwell||0) + dt;
-      if (th._dwell > 4 && world.t - th.launchT > fireGap && redInAir < RED_CAP && !world._tutorial){
+      if (th._dwell > 4 && world.t - th.launchT > fireGap && redInAir < RED_CAP && (!world._tutorial || world._tutFire)){
         th.launchT = world.t; redInAir++;
         const z = terrainH(th.x,th.y);
         const dir = vnorm(vsub(ac.pos, {x:th.x,y:th.y,z:z+4}));
@@ -359,6 +359,10 @@ function updateThreats(dt){
     } else { th._dwell = 0; }
   }
   world._rwrActive = anyTrack;
+  if (world.ecm.jam && world.ecm.jam.length){      // free jam slots whose emitter died or hopped its band away
+    const freed = ecmSyncSlots();
+    if (freed){ banner('JAM SLOT FREED \u2014 NO SIGNAL', 1.0); if (typeof refreshAllMfd==='function') refreshAllMfd(); }
+  }
 }
 
 /* ---------- bandit motion + (at HARD/ACE) firing AI ---------- */

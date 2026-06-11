@@ -168,7 +168,7 @@ const world = {
   gndLock: null,       // locked ground contact (mover/hvt/target) for guided A-G
   airLock: null,       // locked air contact (bandit) for TGP A-A
   harmLock: null,      // designated radar emitter (HAD) for HARM
-  ecm: { on:false, channels:[] },   // EW pod: master switch + the radar bands currently being jammed (max ECM_MAX_CH)
+  ecm: { on:false, jam:[], cursor:50 },   // EW pod: master switch, locked jam frequencies (max JAM_SLOTS), spectrum cursor
   datalinkBroadcast: '124.85',  // freq the AWACS transmits on (tune the DED to match)
   datalinkTuned: '',            // freq the player has entered on the DED
   dlEntry: '',                  // DED scratchpad while typing a freq
@@ -406,12 +406,13 @@ function seedCell(cx,cy){
   if (world.groundMovers.filter(g=>g._proc).length < STREAM_MOVER_CAP && cellRand(cx,cy,6)<0.26){
     const x=ox+(0.2+0.6*cellRand(cx,cy,7))*STREAM_CELL, y=oy+(0.2+0.6*cellRand(cx,cy,8))*STREAM_CELL;
     if (farFromBase(x,y)){
+      const pick=(arr,salt)=>arr[(cellRand(cx,cy,salt)*arr.length)|0];
       const isTEL = lvl>=1 && cellRand(cx,cy,9)<0.4;
-      const m={ x, y, psi:cellRand(cx,cy,10)*6.283, spd:rrange(9,18), hp:1, destroyed:false, underground:false, track:[], _proc:true, _cell:key };
-      if (isTEL){ Object.assign(m,{ name:rpick(lvl>=2 ? ['SA-8 TEL','SA-15 TEL'] : ['SA-8 TEL','SCUD TEL']), kind:'TEL', emits:true, mobile:true, radius:rrange(5000,6500),
+      const m={ x, y, psi:cellRand(cx,cy,10)*6.283, spd:9+cellRand(cx,cy,11)*9, hp:1, destroyed:false, underground:false, track:[], _proc:true, _cell:key };
+      if (isTEL){ Object.assign(m,{ name:pick(lvl>=2 ? ['SA-8 TEL','SA-15 TEL'] : ['SA-8 TEL','SCUD TEL'],12), kind:'TEL', emits:true, mobile:true, radius:5000+cellRand(cx,cy,13)*1500,
                     color:'#ff9a4d', live:true, launchT:-99, tracking:false, hostile:true, geom:mkGeom(['sam','radar']) });
                   world.threats.push(m); }
-      else Object.assign(m,{ name:rpick(['CONVOY','SUPPLY COL','ARMOR COL']), kind:'GROUND', geom:mkGeom(['truck','tank','fuel']) });
+      else Object.assign(m,{ name:pick(['CONVOY','SUPPLY COL','ARMOR COL'],12), kind:'GROUND', geom:mkGeom(['truck','tank','fuel']) });
       world.groundMovers.push(m);
     }
   }
@@ -482,7 +483,7 @@ function applyDifficulty(){
   const d = DIFFS[world.difficulty] || DIFFS[1];
   // drop any previous mobile/structure emitters so re-applying never duplicates them
   world.threats = world.threats.filter(t=>!t.mobile && !t.structure);
-  world.ecm = { on:false, channels:[] };                      // clear any jamming from a prior mission
+  world.ecm = { on:false, jam:[], cursor:50 };               // clear any jamming from a prior mission
   world._aggr = [0.55,0.8,1.0,1.3][world.difficulty] || 0.8;   // fire-rate scale by level
   spawnStructures(d.structures, true);                  // present & armed at every level (aggression scales)
   spawnBandits(d.bandits, d.hva);
@@ -509,68 +510,116 @@ function updateGroundMovers(dt){
   }
 }
 /* ===================== ELECTRONIC WARFARE (jamming) =====================
-   Each SAM scans on 1+ radar bands (1..8) depending on class. The EW pod can
-   jam up to ECM_MAX_CH bands at once, but spreading the pod's power across more
-   bands WEAKENS each — which pushes the burn-through range OUT (the SAM sees
-   through the jam from farther away). Powerful SAMs frequency-HOP after being
-   jammed through several scan cycles, forcing you to re-acquire — so blanket
-   jamming can never be a free pass. */
-const ECM_BANDS = [1,2,3,4,5,6,7,8];
-const ECM_MAX_CH = 3;                 // pod can jam at most 3 bands at once
-const ECM_POWER  = 1.0;
+   The EW pod sweeps a 0..100 frequency spectrum. Every SAM within ECM_DET
+   radiates on a small set of fixed frequencies (its "bands"); each return grows
+   stronger as you close. On the ECM page you slide a cursor across the spectrum
+   and lock up to JAM_SLOTS frequencies into the pod. A SAM is suppressed only
+   when EVERY one of its bands is covered by a jam slot AND you are still outside
+   its burn-through radius (an inner ring, not drawn on the HSD). Spreading the
+   pod across more slots weakens each, pushing burn-through OUT — so blanket
+   jamming is self-defeating; jam only the bands you need. Advanced SAMs
+   frequency-HOP, shifting a band to a new peak you must find and re-lock. */
+const ECM_DET   = 70000;     // spectrum detection range (well beyond any firing ring)
+const JAM_SLOTS = 8;         // pod can lock up to 8 jam frequencies at once
+const JAM_TOL   = 2.5;       // a slot covers a band within +/- this on the 0..100 scale
+const ECM_POWER = 1.0;
+const ECM_BANDS = [1,2,3,4,5,6,7,8];   // (legacy export kept for any external refs)
+function samClassPow(th){ const n=th.name||''; if(/SA-10/.test(n))return 1.35; if(/SA-6|SA-15|SA-11/.test(n))return 1.0; return 0.78; }
 function assignSamFreqs(th){
   let n=1, hop=false;
   if (/SA-10/.test(th.name||'')){ n=3; hop=true; }            // top-tier: 3 bands, hops
   else if (/SA-6|SA-15/.test(th.name||'')){ n=2; hop=true; }   // mid: 2 bands, hops
   else { n=1; hop=false; }                                     // basic: single band, no hop
-  const pool=ECM_BANDS.slice(), bands=[];
-  for (let i=0;i<n && pool.length;i++) bands.push(pool.splice((Math.random()*pool.length)|0,1)[0]);
-  th.scanBands = bands; th.scanIdx = 0; th.hopCapable = hop;
-  th._jamMiss = 0; th._hopThresh = 4 + ((Math.random()*6)|0);  // 4..9 jammed cycles before it hops
-  th._scanT = 0;
+  const bands=[]; let guard=0;
+  while (bands.length<n && guard++<240){ const f=Math.round((6+Math.random()*88)*2)/2;   // 6..94 in 0.5 steps
+    if (bands.every(b=>Math.abs(b-f)>=8)) bands.push(f); }                                // keep them apart
+  th.bands=bands; th.scanBands=bands.slice();                  // scanBands kept for legacy reads
+  th.hopCapable=hop; th.classPow=samClassPow(th);
+  th._hopT = 9 + Math.random()*10; th._jamHold=0;
 }
-function samCurBand(th){ return (th.scanBands && th.scanBands.length) ? th.scanBands[th.scanIdx%th.scanBands.length] : null; }
-/* is this emitter's CURRENT scan band being jammed, and are we still outside its
-   burn-through range? */
-function emitterJammed(th){
-  if (!world.ecm.on || !world.ecm.channels.length || !th.scanBands) return false;
-  const cur = samCurBand(th);
-  if (cur===null || world.ecm.channels.indexOf(cur)<0) return false;     // not covering its current band
-  return distTo(th.x, th.y) > ecmBurnRange(th);                          // jammed only beyond burn-through
-}
+function bandCovered(f){ const J=world.ecm.jam||[]; for (let i=0;i<J.length;i++) if (Math.abs(J[i]-f)<=JAM_TOL) return true; return false; }
+function allBandsCovered(th){ if(!th.bands||!th.bands.length) return false; for(const f of th.bands) if(!bandCovered(f)) return false; return true; }
 function ecmBurnRange(th){
-  const strength = ECM_POWER / Math.max(1, world.ecm.channels.length);   // power split across jammed bands
-  return clamp((th.radius*0.22)/strength, 1500, th.radius*0.95);         // weaker jam -> burn-through farther out
+  const used=Math.max(1,(world.ecm.jam||[]).length);
+  const perBand=ECM_POWER/used;                               // pod power split across locked slots
+  return clamp(th.radius * 0.085 * (th.classPow||1) / perBand, 1400, th.radius*0.92);
 }
-/* advance an emitter's scan pattern; handle jam-driven frequency hops */
+/* every band covered, master on, and still OUTSIDE burn-through -> suppressed */
+function emitterJammed(th){
+  if (!world.ecm.on || !(world.ecm.jam||[]).length || !th.bands) return false;
+  if (!allBandsCovered(th)) return false;
+  return distTo(th.x, th.y) > ecmBurnRange(th);
+}
+/* pod is covering it but you're inside burn-through -> it sees you anyway */
+function emitterBurnThru(th){
+  if (!world.ecm.on || !th.bands || !allBandsCovered(th)) return false;
+  return distTo(th.x, th.y) <= ecmBurnRange(th);
+}
+/* hopCapable SAMs shift one band to a fresh peak on a timer (sooner while fully
+   jammed) so you must re-find and re-lock them on the spectrum */
 function updateSamScan(th, dt){
-  if (!th.scanBands) assignSamFreqs(th);
-  th._scanT = (th._scanT||0) + dt;
-  if (th._scanT > 1.5){                       // one scan dwell -> step to its next band
-    th._scanT = 0;
-    if (th.scanBands.length>1) th.scanIdx = (th.scanIdx+1) % th.scanBands.length;
-    if (emitterJammed(th)){                    // a jammed dwell counts toward a hop
-      th._jamMiss = (th._jamMiss||0) + 1;
-      if (th.hopCapable && th._jamMiss >= th._hopThresh){
-        const free = ECM_BANDS.filter(f=>world.ecm.channels.indexOf(f)<0 && th.scanBands.indexOf(f)<0);
-        if (free.length){
-          th.scanBands = th.scanBands.map(f=> world.ecm.channels.indexOf(f)>=0
-            ? free.splice((Math.random()*free.length)|0,1)[0] : f);   // hop the jammed band(s) only
-          th._jamMiss = 0; th._hopThresh = 4 + ((Math.random()*6)|0);
-          banner((th.name||'SAM')+' FREQ HOP \u2014 REACQUIRING', 1.8);
-        }
-      }
-    } else {
-      th._jamMiss = Math.max(0, (th._jamMiss||0) - 1);   // jam not effective -> decay
-    }
+  if (!th.bands) assignSamFreqs(th);
+  if (!th.hopCapable) return;
+  const fully = world.ecm.on && allBandsCovered(th);
+  th._jamHold = fully ? (th._jamHold||0)+dt : 0;
+  th._hopT -= dt + (fully?dt*1.6:0);
+  if (th._hopT<=0){
+    th._hopT = 10 + Math.random()*10;
+    let idx = th.bands.findIndex(f=>bandCovered(f)); if (idx<0) idx=(Math.random()*th.bands.length)|0;
+    let nf, guard=0;
+    do { nf=Math.round((6+Math.random()*88)*2)/2; guard++; }
+    while (guard<240 && (bandCovered(nf) || th.bands.some((b,j)=>j!==idx && Math.abs(b-nf)<8)));
+    th.bands[idx]=nf; th.scanBands=th.bands.slice();
+    if (distTo(th.x,th.y)<ECM_DET) banner((th.name||'SAM')+' FREQ HOP \u2014 REACQUIRE',1.6);
   }
 }
-/* toggle jamming the emitter's current band on/off (used by the ECM page) */
-function ecmToggleBand(band){
-  const ch = world.ecm.channels, i = ch.indexOf(band);
-  if (i>=0){ ch.splice(i,1); return 'CLEARED'; }
-  if (ch.length >= ECM_MAX_CH) return 'FULL';
-  ch.push(band); world.ecm.on = true; return 'JAMMING';
+/* spectrum peaks for every detected emitter (drives the ECM page + selection) */
+function ecmSpectrum(){
+  const out=[];
+  for (const th of world.threats){ if(!th.live||th.destroyed||th.x===undefined) continue;
+    const d=distTo(th.x,th.y); if (d>ECM_DET) continue;
+    if (!th.bands) assignSamFreqs(th);
+    const strength=clamp(1-(d/ECM_DET),0.05,1)*(th.classPow||1);     // closer / stronger -> taller peak
+    for (const f of th.bands) out.push({ th, f, d, strength, jammed:bandCovered(f) });
+  }
+  return out;
+}
+/* toggle a jam slot at frequency f. returns 'JAMMING' | 'CLEARED' | 'FULL' */
+function ecmLockFreq(f){
+  const J=world.ecm.jam; f=Math.round(f*2)/2;
+  const i=J.findIndex(j=>Math.abs(j-f)<=JAM_TOL);
+  if (i>=0){ J.splice(i,1); if(!J.length) {} return 'CLEARED'; }
+  if (J.length>=JAM_SLOTS) return 'FULL';
+  J.push(f); world.ecm.on=true; return 'JAMMING';
+}
+/* lock the detected peak nearest the cursor (the slider "select") */
+function ecmSelectCursor(){
+  const sp=ecmSpectrum(); if(!sp.length) return 'NONE';
+  let best=null, bd=6; for(const p of sp){ const dd=Math.abs(p.f-(world.ecm.cursor||50)); if(dd<bd){bd=dd;best=p;} }
+  return best ? ecmLockFreq(best.f) : 'NONE';
+}
+/* convenience: fill slots from the strongest detected peaks */
+function ecmAuto(){
+  const sp=ecmSpectrum().sort((a,b)=>b.strength-a.strength);
+  for (const p of sp){ if (world.ecm.jam.length>=JAM_SLOTS) break; if(!bandCovered(p.f)) ecmLockFreq(p.f); }
+  world.ecm.on=true; return world.ecm.jam.length;
+}
+function ecmMoveCursor(dx){ world.ecm.cursor=clamp((world.ecm.cursor||50)+dx, 0, 100); }
+function ecmClear(){ world.ecm.jam=[]; }
+/* release any jam slot that no longer sits on a LIVE, DETECTABLE emitter's band —
+   so a slot frees itself when its SAM is destroyed (its peak drops), hops a band
+   away, OR you simply fly out of detection range of it. Returns slots cleared. */
+function ecmSyncSlots(){
+  const J=world.ecm.jam; if(!J||!J.length) return 0;
+  let cleared=0;
+  for (let i=J.length-1;i>=0;i--){ const f=J[i]; let covers=false;
+    for (const th of world.threats){ if(!th.live||th.destroyed||!th.bands) continue;
+      if (distTo(th.x,th.y) > ECM_DET) continue;        // out of detection range -> not "radiating" to us
+      for (const b of th.bands){ if(Math.abs(b-f)<=JAM_TOL){ covers=true; break; } }
+      if(covers) break; }
+    if(!covers){ J.splice(i,1); cleared++; }
+  }
+  return cleared;
 }
 
 /* automatic rearm — when a weapon station goes WINCHESTER (qty 0) it reloads

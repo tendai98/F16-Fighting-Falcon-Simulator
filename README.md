@@ -241,11 +241,13 @@ Lessons:
 5. **Defence** — fly into a SAM, bring up the **THREAT/EWS page** to read who’s shooting and the inbound missile, then defeat it with **flares + a hard break**.
 6. **Air-to-Air** — A-A mode, AIM-120, radar lock, launch.
 7. **Datalink** — tune the DED to an AWACS frequency and read the shared picture.
-8. **ECM** — jam a basic **SA-3** (single-band) from stand-off and feel the burn-through as you close in.
+8. **ECM** — read the spectrum analyzer, lock the **SA-3**’s frequency from stand-off (8 jam slots), and feel the burn-through as you close in.
+9. **EW Strike** — jam a **2-band SA-6** (cover BOTH peaks), penetrate its ring under cover while it can’t fire, and HARM it from inside — the offensive use of ECM. This SAM *will* shoot if you fail to jam it.
 
 The **targeting lessons (Basics, TGP, SAR, A-A) run in clear airspace** — no SAM rings, so a
-first-timer isn't distracted by the RWR. Attacking, surviving and jamming SAMs are taught in the dedicated **SEAD**, **Defence** and
-**ECM** lessons, each set up around a single isolated SAM that you start *outside* and fly into.
+first-timer isn't distracted by the RWR. Attacking, surviving and jamming SAMs are taught in the dedicated **SEAD**, **Defence**, **ECM**
+and **EW Strike** lessons, each set up around a single isolated SAM that you start well *outside*
+its firing ring — with room to configure the jet (pod on, lock frequencies, arm) as you fly in.
 The hint panel sits at the top of the screen (clear of the MFDs), and its pointer ring anchors
 to the real on-screen position of each button / HUD readout.
 
@@ -262,26 +264,40 @@ selected-weapon box (`REARM 7s`), then a **RELOADED** banner when it restocks. T
 pod and tanks never reload. This keeps the hard levels (3–4) playable without forcing a
 risky landing.
 
-## Electronic Warfare (EW) pod + ECM page
+## Electronic Warfare (EW) pod + ECM spectrum page
 
-A new **ECM page** (open from **HSD → B4**, or toggle the pod with **J**) models radar
-jamming against SAMs:
+The **ECM page** (open from **HSD → B4**, or toggle the pod with **J**) is a **spectrum
+analyzer** for radar jamming:
 
-* **Scan bands.** Every SAM scans on one or more radar bands (1–8) by class — basic sites
-  (SA-3 / SA-8) use a single band; mid-tier (SA-6 / SA-15) two; the SA-10 three.
-* **Jam it.** The page lists every emitter in range with its bands and current scan band.
-  **Tap an emitter to jam its current band.** A jammed SAM can’t track or launch.
-* **Burn-through.** As you fly closer, the SAM’s return overpowers the jam and it
-  reacquires you — the status flips to **BURN-THRU**. So jamming buys stand-off range,
-  not invulnerability.
-* **Not a cheat code.** Three limits keep it honest: the pod jams **at most 3 bands** at
-  once; spreading it across more bands **weakens each** (burn-through happens farther
-  out); and capable SAMs (SA-6 / SA-15 / SA-10) **frequency-hop** to a clear band after
-  several jammed scan cycles — you then have to find and re-jam the new band, but with
-  only three channels you can’t lock down everything at once.
+* **Spectrum + peaks.** The page sweeps a 0–100 frequency scale. Every SAM within
+  detection range (well beyond its firing ring) shows a **peak** at each radar frequency it
+  radiates on — basic sites (SA-2 / SA-3 / SA-8) have one peak, mid-tier (SA-6 / SA-15) two,
+  the SA-10 three. **Taller peak = closer / stronger SAM**, so the picture builds as you
+  approach.
+* **Lock jam slots.** Slide the **◄ ► cursor** across the spectrum (or tap a peak directly)
+  and press **SEL** to lock that frequency into a **jam slot — up to 8**. **AUTO** fills the
+  slots from the strongest peaks; **CLR** empties them. A locked frequency shades a small
+  coverage band (± tolerance) and turns its peak blue.
+* **All bands, or nothing.** A SAM is suppressed only when **every one of its peaks** is
+  covered. Jamming one band of a two-band SA-6 does nothing — you must cover both. This is
+  the fix for jamming that used to "not kick in": coverage is continuous, not a band that
+  cycles in and out.
+* **Burn-through (inner ring).** Each SAM has its lethal ring (drawn on the HSD) **and** an
+  inner **burn-through radius** (not drawn, to avoid clutter). While you jam every band and
+  stay outside burn-through, the SAM can't track or launch — you can cross into its ring
+  unbothered. Once you pass the burn-through radius its return overpowers the jam and it
+  reacquires (peak goes red, status **BURN-THRU**). Jamming buys stand-off, not
+  invulnerability.
+* **Not a cheat code.** Spreading the pod across more slots **weakens each**, pushing
+  burn-through farther out — so blanket-jamming the whole battlefield is self-defeating; jam
+  only what you need. Capable SAMs (SA-6 / SA-15 / SA-10) **frequency-hop**: a peak jumps to
+  a new frequency you must find and re-lock (**FREQ HOP — REACQUIRE**). With 8 slots you can
+  pre-load a whole defended network's frequencies before pushing in.
 
-The Threat/EWS page and HUD reflect all of this: a jammed emitter stops tracking, and a
-hop throws a **FREQ HOP — REACQUIRING** banner.
+The Threat/EWS page and HUD reflect all of this: a jammed emitter stops tracking, burns
+through up close, and announces hops. When a SAM is destroyed, hops a band away, or you simply
+fly out of its detection range, its peak drops off the spectrum and any jam slot that was covering it
+**frees itself automatically** — so the slots and the trace always reflect what is actually radiating.
 
 ## Threat / EWS page (inbound-missile tracking)
 

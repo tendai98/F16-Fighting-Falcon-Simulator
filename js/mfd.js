@@ -59,7 +59,12 @@ class MFD {
     }
     if (this.page==='ECM'){
       if (k==='B1'){ world.ecm.on=!world.ecm.on; banner('ECM '+(world.ecm.on?'ACTIVE':'OFF'),1.1); this.refresh(); refreshAllMfd(); return; }
-      if (k==='B2'){ world.ecm.channels=[]; banner('ECM CHANNELS CLEARED',1.1); this.refresh(); refreshAllMfd(); return; }
+      if (k==='B2'){ ecmClear(); banner('JAM SLOTS CLEARED',1.1); this.refresh(); refreshAllMfd(); return; }
+      if (k==='L1'){ ecmMoveCursor(-3); this.refresh(); return; }
+      if (k==='L2'){ ecmMoveCursor(+3); this.refresh(); return; }
+      if (k==='L3'){ const r=ecmSelectCursor(); banner(r==='FULL'?'JAM SLOTS FULL':r==='NONE'?'NO PEAK NEAR CURSOR':r==='CLEARED'?'SLOT CLEARED':'FREQ LOCKED',1.1); this.refresh(); refreshAllMfd(); return; }
+      if (k==='R1'){ const n=ecmAuto(); banner('AUTO-JAM \u2014 '+n+'/'+JAM_SLOTS+' SLOTS',1.2); this.refresh(); refreshAllMfd(); return; }
+      return;
     }
     if (this.page==='THR'){
       const rm={L1:20,L2:40,L3:80,L4:160};
@@ -152,15 +157,19 @@ class MFD {
       this.refresh(); refreshAllMfd();
     }
   }
-  ecmTap(x,y){                      // ECM page: tap an emitter row to jam its current band
-    const rows=this._ecmRows||[];
-    for (const r of rows){ if (y>=r.y0 && y<=r.y1){
-      const res=ecmToggleBand(r.band);
-      banner(res==='FULL' ? 'ECM CHANNELS FULL' :
-             res==='JAMMING' ? ('JAMMING B'+r.band+' \u2014 '+(r.th.name||'')) :
-                               ('B'+r.band+' CLEARED'), 1.3);
-      this.refresh(); refreshAllMfd(); return;
-    }}
+  ecmTap(x,y){                      // ECM spectrum: peak = jam, slot = clear, empty graph = move cursor
+    for (const c of (this._ecmSlots||[])){ if (c.freq!=null && x>=c.x && x<=c.x+c.w && y>=c.y && y<=c.y+c.h){
+      ecmLockFreq(c.freq); banner('SLOT CLEARED \u2014 '+c.freq.toFixed(1),1.0); this.refresh(); refreshAllMfd(); return; } }
+    const sp=this._ecmSpec; if(!sp) return;
+    if (y>=sp.yTop-6 && y<=sp.yBase+14){
+      let best=null, bd=16;
+      for (const pk of (sp.peaks||[])){ const dx=Math.abs(pk.sx-x); if (dx<bd){ bd=dx; best=pk; } }
+      if (best){ const res=ecmLockFreq(best.f);
+        banner(res==='FULL'?'JAM SLOTS FULL':res==='CLEARED'?('SLOT CLEARED \u2014 '+best.f.toFixed(1)):('JAMMING '+best.f.toFixed(1)+' \u2014 '+(best.th.name||'')),1.2);
+        this.refresh(); refreshAllMfd(); return; }
+      const f=clamp(((x-sp.x0)/Math.max(1,sp.x1-sp.x0))*100,0,100); world.ecm.cursor=Math.round(f*2)/2;
+      this.refresh(); return;
+    }
   }
   dedTap(x,y){                      // DED touch keypad (datalink-frequency entry)
     const keys=this._dedKeys||[];
@@ -246,7 +255,7 @@ const OSB={
   THR:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
        L1:'20',L2:'40',L3:'80',L4:'160', B1:'HSD'},
   ECM:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
-       B1:m=>world.ecm.on?'ECM ON':'ECM OFF', B2:'CLR'},
+       B1:m=>world.ecm.on?'ECM ON':'ECM OFF', B2:'CLR', L1:'\u25c4', L2:'\u25ba', L3:'SEL', R1:'AUTO'},
   SMS:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
        L1:'9X',L2:'120',L3:'AGM',L4:'AGM',R1:'82',R2:'82',R3:'HARM',R4:'TGP',
        B1:m=>'ARM:'+world.masterArm, B2:m=>world.masterMode },
@@ -697,45 +706,81 @@ PAGES.THR={
   }
 };
 
-/* ---------- ECM / EW POD : detect SAM scan bands, jam them, watch burn-through ---------- */
+/* ---------- ECM / EW POD : spectrum analyzer — dancing trace, line markers, jam slots ---------- */
 PAGES.ECM={
   render(m,ctx){
-    const W=m.W, H=m.H;
-    ctx.fillStyle=C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left'; ctx.fillText('ECM  EW POD',6,14);
-    ctx.textAlign='right'; ctx.fillStyle=world.ecm.on?'#5bd6ff':C_DIM; ctx.fillText(world.ecm.on?'ACTIVE':'STBY', W-6,14);
-    const DET=70000;
-    const list=world.threats.filter(t=>t.live && !t.destroyed && t.x!==undefined && distTo(t.x,t.y)<DET)
-                            .sort((a,b)=>distTo(a.x,a.y)-distTo(b.x,b.y)).slice(0,8);
-    const rows=[]; m._ecmRows=rows;
-    if (!list.length){ ctx.fillStyle=C_DIM; ctx.textAlign='center'; ctx.font='10px "Courier New"'; ctx.fillText('NO EMITTERS IN RANGE', W/2, 64); }
-    ctx.font='8px "Courier New"';
-    let y=36;
-    for (const th of list){
-      if (!th.scanBands) assignSamFreqs(th);
-      const cur=samCurBand(th), d=distTo(th.x,th.y);
-      const jammedBand = world.ecm.channels.indexOf(cur)>=0;
-      const burnR=ecmBurnRange(th);
-      let status, col;
-      if (!world.ecm.on || !jammedBand){ status='SEARCH'; col=th.tracking?C_RED:C_ORG; }
-      else if (d<=burnR){ status='BURN-THRU'; col='#ffd24d'; }
-      else { status='JAMMED'; col='#5bd6ff'; }
-      ctx.textAlign='left'; ctx.fillStyle=col; ctx.fillText((th.name||'SAM').slice(0,6), 8, y);
-      ctx.fillStyle=C_DIM; ctx.fillText('B'+th.scanBands.join('/'), 66, y);
-      ctx.fillStyle='#9fe6ff'; ctx.fillText('\u2192'+cur, 116, y);
-      ctx.fillStyle=col; ctx.fillText(status, 146, y);
-      ctx.fillStyle=C_DIM; ctx.textAlign='right'; ctx.fillText((d/NM).toFixed(0)+'NM', W-8, y);
-      rows.push({y0:y-10, y1:y+6, th, band:cur});
-      y+=21;
-    }
-    // jam-band spectrum (1..8)
-    const by=H-42, bw=(W-20)/8;
+    const W=m.W, H=m.H, T=world.t||0;
+    ctx.fillStyle=C_GREEN; ctx.font='bold 10px "Courier New"'; ctx.textAlign='left'; ctx.fillText('ECM SPECTRUM',6,12);
+    const slots=world.ecm.jam||[];
+    ctx.textAlign='center'; ctx.font='8px "Courier New"'; ctx.fillStyle=slots.length?'#5bd6ff':C_DIM; ctx.fillText('JAM '+slots.length+'/'+JAM_SLOTS, W/2, 12);
+    ctx.textAlign='right'; ctx.fillStyle=world.ecm.on?'#5bd6ff':C_DIM; ctx.fillText(world.ecm.on?'ACTIVE':'STBY', W-6, 12);
+
+    const sp=ecmSpectrum();
+    // ===== SPECTRUM ANALYZER (top half) =====
+    const gx0=8, gx1=W-8, gtop=18, gbase=Math.round(H*0.50), gh=gbase-gtop, gw=gx1-gx0;
+    const fx=f=>gx0+(f/100)*gw;
+    ctx.strokeStyle='#0d2a18'; ctx.lineWidth=1; ctx.strokeRect(gx0,gtop,gw,gh);
+    ctx.strokeStyle='#0a2113'; ctx.fillStyle=C_DIM; ctx.font='7px "Courier New"'; ctx.textAlign='center';
+    for (let f=12.5; f<100; f+=12.5){ const xx=fx(f); ctx.beginPath(); ctx.moveTo(xx,gtop); ctx.lineTo(xx,gbase); ctx.stroke(); }
+    for (let f=0; f<=100; f+=25){ ctx.fillText(f, fx(f), gbase+8); }
+    // jam-slot coverage shading (where the pod is denying)
+    for (const j of slots){ const xa=fx(Math.max(0,j-JAM_TOL)), xb=fx(Math.min(100,j+JAM_TOL));
+      ctx.fillStyle='rgba(91,214,255,0.14)'; ctx.fillRect(xa,gtop,xb-xa,gh); }
+    // band markers — plain vertical lines (no arrowheads), coloured by status
+    const peaks=[];
+    for (const p of sp){ const xx=fx(p.f), ph=Math.max(5, gh*0.9*clamp(p.strength,0,1));
+      const col=p.jammed?'#5bd6ff':p.th.tracking?C_RED:C_ORG;
+      ctx.strokeStyle=col; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(xx,gbase); ctx.lineTo(xx,gbase-ph); ctx.stroke();
+      peaks.push({sx:xx, f:p.f, th:p.th, ph, col}); }
+    const tallest=new Map(); for (const pk of peaks){ const t=tallest.get(pk.th); if(!t||pk.ph>t.ph) tallest.set(pk.th,pk); }
     ctx.font='7px "Courier New"'; ctx.textAlign='center';
-    for (let b=1;b<=8;b++){ const bx=10+(b-1)*bw, on=world.ecm.channels.indexOf(b)>=0;
-      ctx.strokeStyle=on?'#5bd6ff':C_DIM; ctx.fillStyle=on?'rgba(91,214,255,0.35)':'transparent'; ctx.lineWidth=on?1.6:1;
-      ctx.fillRect(bx+2,by,bw-4,14); ctx.strokeRect(bx+2,by,bw-4,14);
-      ctx.fillStyle=on?'#5bd6ff':C_DIM; ctx.fillText(b, bx+bw/2, by+10); }
-    ctx.textAlign='left'; ctx.fillStyle=C_GREEN; ctx.font='8px "Courier New"'; ctx.fillText('JAM CH '+world.ecm.channels.length+'/'+ECM_MAX_CH, 10, by-4);
-    ctx.textAlign='center'; ctx.fillStyle=C_DIM; ctx.fillText('TAP AN EMITTER TO JAM ITS BAND  \u00b7  B1 ECM ON/OFF', W/2, H-6);
+    for (const pk of tallest.values()){ ctx.fillStyle=pk.col; ctx.fillText((pk.th.name||'SAM').replace(/\s.*/,'').slice(0,5), pk.sx, gbase-pk.ph-3); }
+    // live analyzer trace — dancing noise floor with gaussian bumps over each band
+    const N=120, floor=gh*0.085, sig=2.6;
+    ctx.strokeStyle='#39ff6e'; ctx.lineWidth=1; ctx.beginPath();
+    for (let i=0;i<=N;i++){ const f=(i/N)*100, xx=fx(f);
+      let v = floor*(0.5 + 0.4*Math.sin(f*0.55 + T*4.2) + 0.3*Math.sin(f*1.7 - T*6.7)); if(v<0) v=0;
+      v += Math.random()*floor*0.55;                                  // grassy floor
+      for (const p of sp){ const ph=gh*0.9*clamp(p.strength,0,1), dd=f-p.f; v += ph*Math.exp(-(dd*dd)/(2*sig*sig)); }
+      v += (Math.random()-0.5)*floor*0.5;                             // shimmer over the peaks too
+      const yy = gbase - clamp(v,0,gh);
+      if(i===0) ctx.moveTo(xx,yy); else ctx.lineTo(xx,yy);
+    }
+    ctx.stroke();
+    // cursor (slider) — plain dashed line
+    const cf=world.ecm.cursor||50, cx=fx(cf);
+    ctx.strokeStyle='#eaff00'; ctx.lineWidth=1; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(cx,gtop); ctx.lineTo(cx,gbase); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle='#eaff00'; ctx.textAlign='left'; ctx.font='8px "Courier New"'; ctx.fillText('CUR '+cf.toFixed(1), gx0+2, gtop+9);
+    m._ecmSpec={ x0:gx0, x1:gx1, yTop:gtop, yBase:gbase, peaks };
+
+    // ===== JAM SLOTS + EMITTERS (bottom half) =====
+    let y = gbase + 18;
+    ctx.textAlign='left'; ctx.fillStyle=C_GREEN; ctx.font='8px "Courier New"'; ctx.fillText('JAM SLOTS', 6, y);
+    const sw=(W-12)/JAM_SLOTS, sy=y+5, sh=22, cells=[];
+    for (let i=0;i<JAM_SLOTS;i++){ const sx=6+i*sw, on=i<slots.length;
+      ctx.strokeStyle=on?'#5bd6ff':'#14361f'; ctx.fillStyle=on?'rgba(91,214,255,0.22)':'transparent'; ctx.lineWidth=1;
+      ctx.fillRect(sx+1,sy,sw-2,sh); ctx.strokeRect(sx+1,sy,sw-2,sh);
+      ctx.fillStyle=on?'#9fe6ff':C_DIM; ctx.textAlign='center'; ctx.font='8px "Courier New"';
+      ctx.fillText(on?slots[i].toFixed(0):'\u00b7', sx+sw/2, sy+14);
+      cells.push({x:sx, y:sy, w:sw, h:sh, freq:on?slots[i]:null}); }
+    m._ecmSlots=cells;
+    // emitter list, spread to fill the rest of the bottom half
+    const byTh=new Map(); for (const p of sp){ if(!byTh.has(p.th)) byTh.set(p.th,p); }
+    const ems=[...byTh.keys()].sort((a,b)=>distTo(a.x,a.y)-distTo(b.x,b.y)).slice(0,5);
+    let ey = sy+sh+14; const eRow = ems.length ? Math.min(15, Math.max(11, (H-12-ey)/ems.length)) : 12;
+    ctx.font='8px "Courier New"';
+    if(!ems.length){ ctx.fillStyle=C_DIM; ctx.textAlign='center'; ctx.fillText('NO EMITTERS IN RANGE', W/2, ey+4); }
+    for (const th of ems){ const d=distTo(th.x,th.y), jammed=emitterJammed(th), burn=emitterBurnThru(th);
+      const status=!world.ecm.on?'SEARCH':jammed?'JAMMED':burn?'BURN-THRU':(allBandsCovered(th)?'BURN-THRU':'SEARCH');
+      const col=jammed?'#5bd6ff':burn?'#ffd24d':th.tracking?C_RED:C_ORG;
+      ctx.textAlign='left'; ctx.fillStyle=col; ctx.fillText((th.name||'SAM').slice(0,7), 6, ey);
+      ctx.fillStyle=C_DIM; ctx.fillText(th.bands.map(f=>f.toFixed(0)).join(' '), 78, ey);
+      ctx.fillStyle=col; ctx.fillText(status, 150, ey);
+      ctx.fillStyle=C_DIM; ctx.textAlign='right'; ctx.fillText((d/NM).toFixed(0)+'NM', W-6, ey);
+      ey += eRow;
+    }
+    ctx.textAlign='center'; ctx.fillStyle=C_DIM; ctx.font='7px "Courier New"';
+    ctx.fillText('TAP PEAK = JAM \u00b7 \u25c4\u25ba SLIDE \u00b7 SEL \u00b7 AUTO \u00b7 TAP SLOT = CLR', W/2, H-4);
   }
 };
 
@@ -994,11 +1039,15 @@ PAGES.TGP={
             for(let k=1;k<4;k++) ctx.lineTo(pts[k].x,pts[k].y); ctx.closePath(); ctx.fill();
             ctx.strokeStyle=edge; ctx.lineWidth=1; ctx.stroke(); };
           for (const d of drawn){
-            poly(d.pc, gray(hot));
             if(!d.roof.some(p=>!p)){
-              poly(d.roof, gray(clamp(hot+0.08,0,1)));
-              ctx.strokeStyle=col; ctx.lineWidth=1; ctx.beginPath();
-              for(let k=0;k<4;k++){ ctx.moveTo(d.pc[k].x,d.pc[k].y); ctx.lineTo(d.roof[k].x,d.roof[k].y); } ctx.stroke();
+              // solid block: fill the four side walls, then cap with the roof
+              const wall=gray(clamp(hot-0.06,0,1));
+              for(let k=0;k<4;k++){ const a=d.pc[k], b=d.pc[(k+1)%4], c=d.roof[(k+1)%4], e=d.roof[k];
+                ctx.fillStyle=wall; ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.lineTo(c.x,c.y); ctx.lineTo(e.x,e.y); ctx.closePath(); ctx.fill();
+                ctx.strokeStyle=edge; ctx.lineWidth=1; ctx.stroke(); }
+              poly(d.roof, gray(clamp(hot+0.10,0,1)));        // bright roof on top
+            } else {
+              poly(d.pc, gray(hot));                          // roof off-screen — at least fill the footprint
             }
           }
           const xs=allPts.map(p=>p.x), ys=allPts.map(p=>p.y);
