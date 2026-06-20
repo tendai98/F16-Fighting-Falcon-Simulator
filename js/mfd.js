@@ -27,9 +27,15 @@ class MFD {
     this.osbEls={};
     frameEl.querySelectorAll('.osb').forEach(b=>{
       this.osbEls[b.dataset.osb]=b;
-      b.addEventListener('click',e=>{ e.stopPropagation(); this.osb(b.dataset.osb); world.activeMfdId=this.id; setActive(); });
+      b.addEventListener('click',e=>{
+        e.stopPropagation();
+        if (window.GameFlow && !GameFlow.isActiveMission()) return;
+        this.osb(b.dataset.osb); world.activeMfdId=this.id; setActive();
+        if (window.ReplayRecorder) ReplayRecorder.recordCockpitAction('mfd_osb', { mfd:this.id, osb:b.dataset.osb, page:this.page });
+      });
     });
     this.canvas.addEventListener('click', e=>{
+      if (window.GameFlow && !GameFlow.isActiveMission()) return;
       world.activeMfdId=this.id; setActive();
       const r=this.canvas.getBoundingClientRect();
       const x=(e.clientX-r.left)*(this.W/r.width), y=(e.clientY-r.top)*(this.H/r.height);
@@ -37,10 +43,11 @@ class MFD {
       else if (this.page==='THR') this.thrTap(x,y);
       else if (this.page==='ECM') this.ecmTap(x,y);
       else if (this.page==='DED' && DED_PAGE==='TUNE') this.dedTap(x,y);
+      if (window.ReplayRecorder) ReplayRecorder.recordCockpitAction('mfd_screen', { mfd:this.id, page:this.page, x:Math.round(x), y:Math.round(y) });
     });
     this.refresh();
   }
-  setPage(p){ this.page=p; this.refresh(); }
+  setPage(p){ this.page=p; if (window.ReplayRecorder) ReplayRecorder.recordEvent('mfd_page', { mfd:this.id, page:p }); this.refresh(); }
   setRange(r){ this.range=r; this.refresh(); }
 
   osb(k){
@@ -72,7 +79,7 @@ class MFD {
       if (k==='B1'){ this.setPage('HSD'); return; }
     }
     if (this.page==='SMS'){
-      const sm={L1:1,L2:2,L3:3,L4:4,R1:5,R2:6,R3:7,R4:8};
+      const sm={L1:1,L2:2,L3:3,L4:4,R1:5,R2:6,R3:7};
       if (sm[k]!==undefined){ selectStation(sm[k]); return; }
       if (k==='B1'){ cycleArm(); return; }
       if (k==='B2'){ cycleMode(); return; }
@@ -209,7 +216,7 @@ class MFD {
       const rm={L1:20,L2:40,L3:80,L4:160}; if (rm[k]) return (this.dlRange||80)===rm[k];
     }
     if (this.page==='SMS'){
-      const sm={L1:1,L2:2,L3:3,L4:4,R1:5,R2:6,R3:7,R4:8};
+      const sm={L1:1,L2:2,L3:3,L4:4,R1:5,R2:6,R3:7};
       if (sm[k]!==undefined) return world.selectedStation===sm[k];
     }
     if (this.page==='TGP'){
@@ -257,7 +264,7 @@ const OSB={
   ECM:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
        B1:m=>world.ecm.on?'ECM ON':'ECM OFF', B2:'CLR', L1:'\u25c4', L2:'\u25ba', L3:'SEL', R1:'AUTO'},
   SMS:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
-       L1:'9X',L2:'120',L3:'AGM',L4:'AGM',R1:'82',R2:'82',R3:'HARM',R4:'TGP',
+       L1:'9X',L2:'120',L3:'AGM',L4:'AGM',R1:'82',R2:'82',R3:'HARM',
        B1:m=>'ARM:'+world.masterArm, B2:m=>world.masterMode },
   TGP:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
        L1:'Z1',L2:'Z2',L3:'Z3',L4:'Z4',
@@ -826,18 +833,20 @@ PAGES.SMS={
       else { align='right'; labelX=W-4; labelY=34 + (s.id-5)*22; }
       ctx.textAlign=align;
       // marker
-      const seld = world.selectedStation===s.id;
-      ctx.strokeStyle = seld?C_HOT: s.qty>0?C_GREEN:'rgba(120,120,120,0.7)';
+      const selectable = (typeof isWeaponStation==='function') ? isWeaponStation(s) : (s.kind!=='pod' && s.kind!=='tank');
+      const seld = selectable && world.selectedStation===s.id;
+      ctx.strokeStyle = seld?C_HOT: selectable&&s.qty>0?C_GREEN:C_DIM;
       ctx.fillStyle = seld?'rgba(168,255,192,0.3)':'transparent'; ctx.lineWidth=seld?2:1;
       ctx.fillRect(p.x-3,p.y-3,6,6); ctx.strokeRect(p.x-3,p.y-3,6,6);
       // label text (no connector line — that was the clutter we removed)
-      ctx.fillStyle=seld?C_HOT:C_GREEN; ctx.font='bold 8px "Courier New"';
+      ctx.fillStyle=seld?C_HOT:(selectable?C_GREEN:C_DIM); ctx.font='bold 8px "Courier New"';
       ctx.fillText('S'+s.id+' '+s.pos, labelX, labelY);
       const reloading = s.qty<=0 && s.reloadT>0;
-      ctx.fillStyle = reloading?'#ffd24d':(s.qty>0?C_GREEN:'rgba(120,120,120,0.8)'); ctx.font='8px "Courier New"';
-      const qtyTxt = (s.kind==='tank'||s.kind==='pod') ? ''
+      ctx.fillStyle = selectable ? (reloading?'#ffd24d':(s.qty>0?C_GREEN:'rgba(120,120,120,0.8)')) : C_DIM; ctx.font='8px "Courier New"';
+      const qtyTxt = !selectable ? ''
                    : reloading ? ('  RLD '+Math.max(0,Math.ceil(s.reloadT-world.t))+'s') : (' x'+s.qty);
-      ctx.fillText(s.wpn+qtyTxt, labelX, labelY+9);
+      const nameTxt = !selectable && s.kind==='pod' ? 'SENSOR POD' : s.wpn;
+      ctx.fillText(nameTxt+qtyTxt, labelX, labelY+9);
     }
     // selected weapon box
     const sel=selectedStore();
@@ -918,24 +927,75 @@ function tgpGimbal(S){
   return (up > 0.18) || (fw < -0.80);  // ~10deg above plane, ~143deg off the nose
 }
 const TGP_FOV={1:8,2:5,3:3,4:1.5};      // zoom stage -> field of view (deg); higher stage = tighter zoom
+
+/* Replay-safe TGP visuals -------------------------------------------------
+   Replay playback rebuilds world objects from immutable snapshots many times
+   per second. If the TGP renderer uses Math.random() when a replay object is
+   drawn, installations appear to reshape/mutate every frame. These helpers use
+   a deterministic seed derived from a stable object id/identity, so generated
+   TGP geometry is identical every time the same replay snapshot is rendered. */
+function tgpHashString(str){
+  str=String(str||''); let h=2166136261>>>0;
+  for(let i=0;i<str.length;i++){ h^=str.charCodeAt(i); h=Math.imul(h,16777619)>>>0; }
+  return h>>>0;
+}
+function tgpObjectSeed(obj, salt){
+  obj=obj||{};
+  let key = String(salt||'tgp')+'|'+String(obj.id||obj.replayId||obj.name||obj.label||obj.kind||obj.type||'obj');
+  if(!obj.id && !obj.replayId && !obj.mobile && obj.spd===undefined){
+    key += '|'+Math.round((obj.x||0)/10)+'|'+Math.round((obj.y||0)/10);
+  }
+  if(obj.geom) key += '|'+String(obj.geom.type||'')+'|'+Math.round((obj.geom.l||0)*10)+'|'+Math.round((obj.geom.w||0)*10)+'|'+Math.round((obj.geom.h||0)*10);
+  return tgpHashString(key);
+}
+function tgpRand(seed){
+  let s=(seed>>>0)||0x9e3779b9;
+  return function(){ s=(Math.imul(1664525,s)+1013904223)>>>0; return s/4294967296; };
+}
+function tgpRrange(r, a, b){ return a + (b-a)*r(); }
+function tgpPick(r, arr){ return arr[Math.min(arr.length-1, Math.floor(r()*arr.length))]; }
+function mkTgpGeomFor(obj, types){
+  types=types&&types.length?types:['truck','tank','sam','radar','fuel','bunker'];
+  const r=tgpRand(tgpObjectSeed(obj,'geom'));
+  const t=tgpPick(r,types);
+  const base={ truck:{l:14,w:5,h:4}, tank:{l:9,w:6,h:3}, sam:{l:12,w:5,h:7},
+               radar:{l:8,w:8,h:10}, fuel:{l:11,w:7,h:6}, bunker:{l:24,w:16,h:7} }[t] || {l:10,w:6,h:5};
+  const k=tgpRrange(r,0.8,1.5);
+  return { type:t, l:base.l*k, w:base.w*k, h:base.h*k, rot:tgpRrange(r,0,Math.PI*2) };
+}
+function ensureTgpGeom(obj, types){
+  if(!obj) return {l:10,w:6,h:5,rot:0,type:'generic'};
+  if(!obj.geom) obj.geom=mkTgpGeomFor(obj,types);
+  return obj.geom;
+}
+
 /* a small compound of 2-5 boxes (a main structure + satellites), sized off the
-   target's overall geometry. Generated once per target and cached on obj._cluster
-   so it's stable frame-to-frame but distinct per contact. */
-function mkCluster(g){
-  const n = 2 + (Math.random()*4|0);                       // 2..5 boxes
-  const boxes = [{ dx:0, dy:0, l:g.l*0.85, w:g.w*0.85, h:g.h, rot:0 }];   // main structure
+   target's overall geometry. Generated deterministically from the object seed
+   and cached on obj._cluster so it is stable in live missions and replays. */
+function mkCluster(g, seed){
+  const r = seed===undefined ? Math.random : tgpRand(seed);
+  const n = 2 + (r()*4|0);                                  // 2..5 boxes
+  const boxes = [{ dx:0, dy:0, l:g.l*0.85, w:g.w*0.85, h:g.h, rot:0 }];
   for (let i=1;i<n;i++){
     boxes.push({
-      dx: rrange(-g.l*0.7, g.l*0.7),
-      dy: rrange(-g.w*0.8, g.w*0.8),
-      l:  g.l*rrange(0.2,0.55),
-      w:  g.w*rrange(0.25,0.7),
-      h:  g.h*rrange(0.3,1.15),
-      rot: rrange(0, Math.PI),
+      dx: tgpRrange(r, -g.l*0.7, g.l*0.7),
+      dy: tgpRrange(r, -g.w*0.8, g.w*0.8),
+      l:  g.l*tgpRrange(r, 0.2,0.55),
+      w:  g.w*tgpRrange(r, 0.25,0.7),
+      h:  g.h*tgpRrange(r, 0.3,1.15),
+      rot: tgpRrange(r, 0, Math.PI),
     });
   }
   return boxes;
 }
+function ensureTgpCluster(obj, g){
+  if(!obj._cluster) obj._cluster = mkCluster(g, tgpObjectSeed(obj,'cluster'));
+  return obj._cluster;
+}
+function ensureTgpVisuals(obj, types){
+  const g=ensureTgpGeom(obj,types); ensureTgpCluster(obj,g); return obj;
+}
+if (typeof window!=='undefined') window.ensureTgpVisuals = ensureTgpVisuals;
 PAGES.TGP={
   render(m,ctx){
     const W=m.W,H=m.H,PAD=20, vw=W-2*PAD, vh=H-2*PAD-22, x0=PAD, y0=PAD;
@@ -1016,12 +1076,12 @@ PAGES.TGP={
         // Every box is projected through the live TGP camera, so the whole cluster
         // shifts perspective as the look-angle and range change.
         const drawGeom=(obj, rot, hot, col, label)=>{
-          const g=obj.geom||{l:10,w:6,h:5};
-          if (!obj._cluster) obj._cluster = mkCluster(g);
+          const g=ensureTgpGeom(obj, ['truck','tank','sam','radar','fuel','bunker']);
+          const cluster=ensureTgpCluster(obj, g);
           const edge = whot ? 'rgba(0,0,0,0.85)' : 'rgba(255,255,255,0.9)';
           const cR=Math.cos(rot), sR=Math.sin(rot);
           const drawn=[]; const allPts=[];
-          for (const bx of obj._cluster){
+          for (const bx of cluster){
             const ox = obj.x + (cR*bx.dx - sR*bx.dy);          // box centre, offset rotated into the target frame
             const oy = obj.y + (sR*bx.dx + cR*bx.dy);
             const z = terrainH(ox,oy);
@@ -1074,7 +1134,7 @@ PAGES.TGP={
           // static SAM sites / launchers — give each a launcher footprint so the pod sees it
           for (const t of world.threats){
             if (t.destroyed || t.mobile || t.structure || t.x===undefined) continue;   // TELs via movers, structures via their own loop
-            if (!t.geom){ const g=mkGeom(['sam','radar']); t.geom={type:g.type, l:g.l*1.8, w:g.w*1.8, h:g.h*1.5, rot:g.rot}; }
+            if (!t.geom){ const g=mkTgpGeomFor(t, ['sam','radar']); t.geom={type:g.type, l:g.l*1.8, w:g.w*1.8, h:g.h*1.5, rot:g.rot}; }
             drawGeom(t, (t.geom&&t.geom.rot)||0, (t.live===false?0.45:0.96),
                      (t===world.gndLock||t.tracking)?C_RED:C_ORG, t.name||'SAM');
           }
@@ -1108,6 +1168,71 @@ PAGES.TGP={
             ctx.fillText(Math.round(b.alt*FT/100)*100+'FT', ccx+half+3, ccy+8);
           }
         }
+        // inbound/released ordnance: render the actual missile/bomb body and its recent
+        // path through the TGP camera. This gives replay and live pod video the
+        // familiar fast streak/object arriving from the attack geometry instead
+        // of only showing a sudden target explosion.
+        const inFrame=(p)=>p && p.x>=x0-50 && p.x<=x0+vw+50 && p.y>=y0-50 && p.y<=y0+vh+50;
+        const trailPts=(o, back)=>{
+          const pts=((o&&o.trail)||[]).filter(Boolean).slice(-22).map(q=>({x:q.x,y:q.y,z:q.z}));
+          if (o && o.pos){
+            const lp=pts[pts.length-1];
+            if (!lp || Math.hypot((lp.x||0)-o.pos.x,(lp.y||0)-o.pos.y,(lp.z||0)-o.pos.z)>2) pts.push({x:o.pos.x,y:o.pos.y,z:o.pos.z});
+            if (pts.length<2 && o.vel){
+              const d=vnorm(o.vel);
+              pts.unshift(vadd(o.pos, vscale(d, -back)));
+              pts.unshift(vadd(o.pos, vscale(d, -back*0.55)));
+            }
+          }
+          return pts;
+        };
+        const drawOrdnance=(o, kind)=>{
+          if(!o || !o.pos) return;
+          const head=proj(o.pos); if(!head) return;
+          const isMissile=kind==='missile';
+          const pts=trailPts(o, isMissile?420:190);
+          let any=inFrame(head), started=false;
+          ctx.save();
+          ctx.strokeStyle=gray(isMissile?0.98:0.88);
+          ctx.fillStyle=gray(0.98);
+          ctx.shadowColor=gray(1.0);
+          ctx.shadowBlur=isMissile?7:4;
+          ctx.globalAlpha=isMissile?0.9:0.72;
+          ctx.lineWidth=isMissile?2.0:1.3;
+          ctx.beginPath();
+          for (const q of pts){
+            const pp=proj(q);
+            if(!pp){ started=false; continue; }
+            any = any || inFrame(pp);
+            if(!started){ ctx.moveTo(pp.x,pp.y); started=true; }
+            else ctx.lineTo(pp.x,pp.y);
+          }
+          if(any) ctx.stroke();
+          // A short bright body along the instantaneous velocity keeps the projectile
+          // readable even when the historical trail is foreshortened by the sensor angle.
+          if (any && o.vel){
+            const dir=vnorm(o.vel);
+            const tail=proj(vadd(o.pos, vscale(dir, isMissile?-30:-16)));
+            if(tail){ ctx.globalAlpha=1; ctx.lineWidth=isMissile?2.4:1.7; ctx.beginPath(); ctx.moveTo(tail.x,tail.y); ctx.lineTo(head.x,head.y); ctx.stroke(); }
+          }
+          if(any){
+            const r=clamp(f*(isMissile?3.2:2.3)/Math.max(1,head.z), 1.4, isMissile?4.5:3.2);
+            ctx.globalAlpha=1;
+            if(isMissile){
+              ctx.beginPath(); ctx.moveTo(head.x,head.y-r*1.7); ctx.lineTo(head.x+r*1.2,head.y); ctx.lineTo(head.x,head.y+r*1.7); ctx.lineTo(head.x-r*1.2,head.y); ctx.closePath(); ctx.fill();
+            } else {
+              ctx.beginPath(); ctx.arc(head.x,head.y,r,0,Math.PI*2); ctx.fill();
+            }
+          }
+          ctx.restore();
+        };
+        if (!masked){
+          for (const bm of world.bombs){ drawOrdnance(bm,'bomb'); }
+          for (const ms of world.sams){
+            if (ms.team==='BLUE' || ms.groundPos || ms.kind==='AGM' || ms.kind==='HARM' || /AGM|HARM|MAVERICK/.test(ms.weapon||'')) drawOrdnance(ms,'missile');
+          }
+        }
+
         // explosions / hits flash on the FLIR
         for (const e of world.effects){
           const p=proj(e.pos); if(!p)continue;
@@ -1334,6 +1459,15 @@ PAGES.DLNK={
 };
 
 /* ---------- store/mode helpers ---------- */
-function selectStation(id){ world.selectedStation=id; world.stations.forEach(s=>s.sel=(s.id===id)); refreshAllMfd(); }
-function cycleArm(){ world.masterArm = world.masterArm==='SAFE'?'ARM':world.masterArm==='ARM'?'SIM':'SAFE'; refreshAllMfd(); banner('M-ARM '+world.masterArm,1); }
-function cycleMode(){ const M=['NAV','A-A','A-G','DGFT']; world.masterMode=M[(M.indexOf(world.masterMode)+1)%M.length]; refreshAllMfd(); banner(world.masterMode,1); }
+function selectStation(id){
+  const st=(world.stations||[]).find(s=>s.id===id);
+  if (!st || (typeof isWeaponStation==='function' ? !isWeaponStation(st) : (st.kind==='pod'||st.kind==='tank'))){
+    if (st && st.kind==='pod') banner('TGP IS A SENSOR — USE TGP PAGE', 1.1);
+    return;
+  }
+  world.selectedStation=id; world.stations.forEach(s=>s.sel=(s.id===id));
+  if (window.ReplayRecorder) ReplayRecorder.recordEvent('selection_changed', { field:'station', value:id });
+  refreshAllMfd();
+}
+function cycleArm(){ world.masterArm = world.masterArm==='SAFE'?'ARM':world.masterArm==='ARM'?'SIM':'SAFE'; if (window.ReplayRecorder) ReplayRecorder.recordEvent('selection_changed', { field:'masterArm', value:world.masterArm }); refreshAllMfd(); banner('M-ARM '+world.masterArm,1); }
+function cycleMode(){ const M=['NAV','A-A','A-G','DGFT']; world.masterMode=M[(M.indexOf(world.masterMode)+1)%M.length]; if (window.ReplayRecorder) ReplayRecorder.recordEvent('selection_changed', { field:'masterMode', value:world.masterMode }); refreshAllMfd(); banner(world.masterMode,1); }

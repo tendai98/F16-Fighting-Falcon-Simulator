@@ -431,3 +431,154 @@ body {
   0%,100% { opacity: 0.5; }
   50%     { opacity: 1; }
 }
+
+/* =====================================================================
+   GAME MENU / DEBRIEF / REPLAY UI
+   ===================================================================== */
+#game-ui{position:fixed;inset:0;z-index:80;pointer-events:none;font-family:"Courier New",monospace;color:#5bff9b}
+.game-modal{position:absolute;inset:0;display:none;align-items:center;justify-content:center;padding:24px;background:radial-gradient(circle at 50% 30%,rgba(11,38,20,.62),rgba(0,0,0,.78));pointer-events:auto}
+.game-modal.show{display:flex}
+.game-card{border:1px solid rgba(91,255,155,.65);background:rgba(0,14,7,.92);box-shadow:0 0 34px rgba(33,255,91,.22),inset 0 0 28px rgba(33,255,91,.08);border-radius:16px;padding:24px;max-width:min(1060px,92vw);max-height:88vh;overflow:auto;text-shadow:0 0 7px rgba(91,255,155,.55)}
+.menu-card{width:560px;text-align:center}.small-card{width:460px;text-align:center}.debrief-card{width:920px}.browser-card{width:1080px}
+.game-kicker{font-size:13px;letter-spacing:.24em;color:#a8ffc0;margin-bottom:10px}.game-card h1,.game-card h2{margin:4px 0 18px;letter-spacing:.18em;color:#d5ffe0}.menu-level{margin:8px 0 18px;color:#a8ffc0}.menu-level b{color:#ffd24d}
+.menu-buttons{display:grid;gap:10px}.menu-buttons button,.game-card button,.replay-hud button{cursor:pointer;border:1px solid rgba(91,255,155,.78);border-radius:10px;background:rgba(8,34,16,.95);color:#d5ffe0;padding:11px 14px;font:bold 14px "Courier New",monospace;letter-spacing:.08em;box-shadow:inset 0 0 12px rgba(91,255,155,.12)}
+.menu-buttons button:hover,.game-card button:hover,.replay-hud button:hover{background:rgba(31,83,44,.95);box-shadow:0 0 16px rgba(91,255,155,.18),inset 0 0 14px rgba(91,255,155,.18)}
+.game-card button.secondary,.replay-hud button{border-color:rgba(168,255,192,.45);background:rgba(0,18,10,.86)}.game-card button:disabled{opacity:.5;cursor:wait}.menu-foot{margin-top:16px;font-size:12px;color:#8decae}.level-buttons{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0}.level-choice.active{color:#ffd24d;border-color:#ffd24d}
+.debrief-grid{display:grid;grid-template-columns:minmax(280px,1fr) 320px;gap:24px}.score-total{font:bold 46px "Courier New",monospace;color:#ffd24d;text-align:center;margin-bottom:12px}#score-breakdown{width:100%;border-collapse:collapse;font-size:13px}#score-breakdown td{border-bottom:1px solid rgba(91,255,155,.16);padding:7px 5px}#score-breakdown td:last-child{text-align:right;color:#d5ffe0}.pilot-form{display:grid;gap:12px}.pilot-form label{display:grid;gap:7px;color:#d5ffe0;font-weight:bold}.pilot-form label span{font-size:11px;font-weight:normal;color:#8decae}.pilot-form input,.pilot-form select{width:100%;box-sizing:border-box;border:1px solid rgba(91,255,155,.6);border-radius:9px;background:#001006;color:#d5ffe0;padding:11px;font:bold 16px "Courier New",monospace;text-transform:uppercase;outline:none}.save-status{min-height:22px;color:#ffd24d;font-size:12px}.browser-head{display:flex;align-items:center;justify-content:space-between;gap:18px}.replay-table-wrap{overflow:auto;max-height:64vh}.replay-table{width:100%;border-collapse:collapse;font-size:12px}.replay-table th,.replay-table td{border-bottom:1px solid rgba(91,255,155,.15);padding:9px 7px;text-align:left;white-space:nowrap}.replay-table th{color:#a8ffc0;letter-spacing:.08em}.replay-table td:nth-child(6){color:#ffd24d;font-weight:bold;text-align:right}.empty-replay{text-align:center;padding:32px;color:#8decae}.outcome-WIN{color:#ffd24d}.outcome-LOSS{color:#ff7b7b}
+.replay-hud{position:absolute;top:14px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:18px;pointer-events:auto;border:1px solid rgba(91,255,155,.62);background:rgba(0,12,6,.86);border-radius:14px;padding:10px 12px;box-shadow:0 0 22px rgba(33,255,91,.18)}.replay-hud.show{display:flex}.replay-hud>div{display:flex;align-items:center;gap:10px}.replay-hud b{color:#ffd24d}.replay-hud span{color:#d5ffe0}
+body[data-game-mode="ACTIVE_MISSION"] #game-ui,body[data-game-mode="FLIGHT_SCHOOL"] #game-ui{pointer-events:none}body[data-game-mode="ACTIVE_MISSION"] .game-modal,body[data-game-mode="FLIGHT_SCHOOL"] .game-modal{display:none!important}
+@media (max-width:760px){.debrief-grid{grid-template-columns:1fr}.menu-card,.small-card{width:min(92vw,560px)}.game-card{padding:18px}.level-buttons{grid-template-columns:1fr}.replay-hud{left:8px;right:8px;transform:none;justify-content:space-between;flex-wrap:wrap}}
+
+
+/* ---- F16 feature UI patch v2 ---- */
+#game-ui{position:fixed;inset:0;z-index:80;pointer-events:none;font-family:"Courier New",monospace;color:#5bff9b}
+#game-ui .game-modal{position:absolute;inset:0;display:none;align-items:center;justify-content:center;padding:24px;background:radial-gradient(circle at 50% 28%,rgba(11,38,20,.66),rgba(0,0,0,.82));pointer-events:auto}
+#game-ui .game-modal.show{display:flex}
+#game-ui .game-card{border:1px solid rgba(91,255,155,.65);background:rgba(0,14,7,.94);box-shadow:0 0 34px rgba(33,255,91,.22),inset 0 0 28px rgba(33,255,91,.08);border-radius:16px;padding:24px;max-width:min(1060px,92vw);max-height:88vh;overflow:auto;text-shadow:0 0 7px rgba(91,255,155,.55)}
+#game-ui .menu-card{width:560px;text-align:center}#game-ui .debrief-card{width:920px}#game-ui .browser-card{width:1080px}
+#game-ui .game-kicker{font-size:13px;letter-spacing:.24em;color:#a8ffc0;margin-bottom:10px}#game-ui .game-card h1,#game-ui .game-card h2{margin:4px 0 18px;letter-spacing:.18em;color:#d5ffe0}
+#game-ui .menu-level{margin:8px 0 18px;color:#a8ffc0}#game-ui .menu-level b{color:#ffd24d}
+#game-ui .menu-buttons{display:grid;gap:10px}#game-ui .menu-buttons button,#game-ui .game-card button,#game-ui .replay-hud button{cursor:pointer;border:1px solid rgba(91,255,155,.78);border-radius:10px;background:rgba(8,34,16,.95);color:#d5ffe0;padding:11px 14px;font:bold 14px "Courier New",monospace;letter-spacing:.08em;box-shadow:inset 0 0 12px rgba(91,255,155,.12)}
+#game-ui .menu-buttons button:hover,#game-ui .game-card button:hover,#game-ui .replay-hud button:hover{background:rgba(31,83,44,.95);box-shadow:0 0 16px rgba(91,255,155,.18),inset 0 0 14px rgba(91,255,155,.18)}
+#game-ui .game-card button.secondary,#game-ui .replay-hud button{border-color:rgba(168,255,192,.45);background:rgba(0,18,10,.86)}#game-ui .game-card button:disabled{opacity:.5;cursor:wait}
+#game-ui .menu-foot{margin-top:16px;font-size:12px;color:#8decae}.level-buttons{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0}.level-choice.active{color:#ffd24d;border-color:#ffd24d}
+#game-ui .debrief-grid{display:grid;grid-template-columns:minmax(280px,1fr) 320px;gap:24px}#game-ui .score-total{font:bold 46px "Courier New",monospace;color:#ffd24d;text-align:center;margin-bottom:12px}
+#game-ui #score-breakdown{width:100%;border-collapse:collapse;font-size:13px}#game-ui #score-breakdown td{border-bottom:1px solid rgba(91,255,155,.16);padding:7px 5px}#game-ui #score-breakdown td:last-child{text-align:right;color:#d5ffe0}
+#game-ui .pilot-form{display:grid;gap:12px}#game-ui .pilot-form label{display:grid;gap:7px;color:#d5ffe0;font-weight:bold}#game-ui .pilot-form label span{font-size:11px;font-weight:normal;color:#8decae}
+#game-ui .pilot-form input,#game-ui .pilot-form select{width:100%;box-sizing:border-box;border:1px solid rgba(91,255,155,.6);border-radius:9px;background:#001006;color:#d5ffe0;padding:11px;font:bold 16px "Courier New",monospace;text-transform:uppercase;outline:none}
+#game-ui .save-status{min-height:22px;color:#ffd24d;font-size:12px}.browser-head{display:flex;align-items:center;justify-content:space-between;gap:18px}.replay-table-wrap{overflow:auto;max-height:64vh}.replay-table{width:100%;border-collapse:collapse;font-size:12px}.replay-table th,.replay-table td{border-bottom:1px solid rgba(91,255,155,.15);padding:9px 7px;text-align:left;white-space:nowrap}.replay-table th{color:#a8ffc0;letter-spacing:.08em}.replay-table td:nth-child(6){color:#ffd24d;font-weight:bold;text-align:right}.empty-replay{text-align:center;padding:32px;color:#8decae}.outcome-WIN{color:#ffd24d}.outcome-LOSS{color:#ff7b7b}
+#game-ui .replay-hud{position:absolute;top:14px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:18px;pointer-events:auto;border:1px solid rgba(91,255,155,.62);background:rgba(0,12,6,.86);border-radius:14px;padding:10px 12px;box-shadow:0 0 22px rgba(33,255,91,.18)}#game-ui .replay-hud.show{display:flex}#game-ui .replay-hud>div{display:flex;align-items:center;gap:10px}#game-ui .replay-hud b{color:#ffd24d}#game-ui .replay-hud span{color:#d5ffe0}
+body[data-game-mode="ACTIVE_MISSION"] #game-ui,body[data-game-mode="FLIGHT_SCHOOL"] #game-ui{pointer-events:none}body[data-game-mode="ACTIVE_MISSION"] #game-ui .game-modal,body[data-game-mode="FLIGHT_SCHOOL"] #game-ui .game-modal{display:none!important}
+@media (max-width:760px){#game-ui .debrief-grid{grid-template-columns:1fr}#game-ui .menu-card{width:min(92vw,560px)}#game-ui .game-card{padding:18px}.level-buttons{grid-template-columns:1fr}#game-ui .replay-hud{left:8px;right:8px;transform:none;justify-content:space-between;flex-wrap:wrap}}
+
+/* ---- Replay playback widget patch: compact top-left radial control ---- */
+#game-ui .replay-hud,
+.replay-hud{
+  position:fixed !important;
+  top:14px !important;
+  left:14px !important;
+  right:auto !important;
+  transform:none !important;
+  width:218px !important;
+  height:140px !important;
+  display:none !important;
+  pointer-events:auto !important;
+  border:0 !important;
+  background:transparent !important;
+  box-shadow:none !important;
+  padding:0 !important;
+  overflow:visible !important;
+  z-index:95 !important;
+  text-shadow:0 0 8px rgba(91,255,155,.7);
+}
+#game-ui .replay-hud.show,
+.replay-hud.show{display:block !important;}
+
+/* Circle is deliberately layered above the tabs. The buttons keep full borders and slide behind it. */
+#game-ui .replay-core,
+.replay-core{
+  position:absolute;
+  left:0;
+  top:0;
+  width:126px;
+  height:126px;
+  border-radius:50%;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:2px;
+  border:1px solid rgba(91,255,155,.75);
+  background:radial-gradient(circle at 42% 35%, rgba(12,52,24,.94), rgba(0,14,7,.90) 68%, rgba(0,0,0,.82));
+  box-shadow:0 0 22px rgba(33,255,91,.24), inset 0 0 30px rgba(91,255,155,.12);
+  z-index:4;
+  pointer-events:auto;
+}
+#game-ui .replay-core:before,
+.replay-core:before{
+  content:"";
+  position:absolute;
+  inset:8px;
+  border:1px dashed rgba(91,255,155,.32);
+  border-radius:50%;
+  pointer-events:none;
+}
+#game-ui .replay-tag,
+.replay-tag{font:bold 10px "Courier New",monospace;letter-spacing:.18em;color:#a8ffc0;line-height:1;}
+#game-ui .replay-alias,
+.replay-alias{max-width:92px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:bold 14px "Courier New",monospace;color:#ffd24d;line-height:1.05;}
+#game-ui .replay-countdown,
+.replay-countdown{font:bold 16px "Courier New",monospace;color:#d5ffe0;line-height:1.05;}
+#game-ui .replay-elapsed,
+.replay-elapsed{font:bold 9px "Courier New",monospace;color:#8decae;line-height:1.05;}
+#game-ui .replay-score,
+.replay-score{font:bold 10px "Courier New",monospace;color:#ffd24d;line-height:1.05;}
+
+#game-ui .replay-arch,
+.replay-arch{
+  position:absolute;
+  left:90px;
+  width:122px;
+  min-width:0;
+  height:33px;
+  padding:0 12px 0 38px !important;
+  text-align:center !important;
+  border-radius:999px !important;
+  border:1px solid rgba(91,255,155,.68) !important;
+  background:linear-gradient(90deg, rgba(0,18,8,.82), rgba(8,44,21,.90) 48%, rgba(14,58,27,.88)) !important;
+  color:#d5ffe0 !important;
+  font:bold 10px "Courier New",monospace !important;
+  letter-spacing:.09em !important;
+  box-shadow:0 0 16px rgba(33,255,91,.14), inset 0 0 12px rgba(91,255,155,.10) !important;
+  overflow:visible !important;
+  z-index:1;
+}
+#game-ui .replay-arch:before,
+.replay-arch:before{
+  content:"";
+  position:absolute;
+  inset:4px;
+  border-radius:999px;
+  border:1px solid rgba(168,255,192,.13);
+  pointer-events:none;
+}
+#game-ui .replay-arch:hover,
+.replay-arch:hover{
+  color:#ffd24d !important;
+  background:linear-gradient(90deg, rgba(0,24,10,.88), rgba(18,70,33,.95) 48%, rgba(28,96,45,.92)) !important;
+}
+#game-ui .replay-pause,
+.replay-pause{top:7px;}
+#game-ui .replay-restart,
+.replay-restart{top:47px;}
+#game-ui .replay-exit,
+.replay-exit{top:87px;}
+
+@media (max-width:760px){
+  #game-ui .replay-hud,.replay-hud{top:8px !important;left:8px !important;right:auto !important;width:206px !important;height:128px !important;}
+  #game-ui .replay-core,.replay-core{width:114px;height:114px;}
+  #game-ui .replay-arch,.replay-arch{left:82px;width:116px;height:30px;padding:0 10px 0 38px !important;font-size:9px !important;}
+  #game-ui .replay-pause,.replay-pause{top:6px;}
+  #game-ui .replay-restart,.replay-restart{top:42px;}
+  #game-ui .replay-exit,.replay-exit{top:78px;}
+}

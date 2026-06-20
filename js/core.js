@@ -82,6 +82,8 @@ const world = {
   message: '',           // transient banner
   messageT: 0,
   outcome: null,         // 'WIN' | 'LOSS' | null
+  outcomeReason: '',
+  _missionGen: 0,          // increments on every mission reset/transition to invalidate delayed callbacks
 
   // ---- ownship flight state ----
   ac: {
@@ -158,7 +160,7 @@ const world = {
     { id:5, pos:'LIN', wpn:'Mk-82',   qty:3, sel:true,  kind:'ag'   },  // 6 gravity bombs
     { id:6, pos:'RIN', wpn:'Mk-82',   qty:3, sel:false, kind:'ag'   },
     { id:7, pos:'LOB', wpn:'AGM-88',  qty:4, sel:false, kind:'harm' },  // 4 HARM
-    { id:8, pos:'CT',  wpn:'TGP',     qty:1, sel:false, kind:'pod'  },
+    { id:8, pos:'CT',  wpn:'TGP POD', qty:1, sel:false, kind:'pod'  },
   ],
   selectedStation: 5,
   masterArm: 'SAFE',   // SAFE | ARM | SIM
@@ -790,6 +792,11 @@ function updateFlight(ac, dt){
       ac.onGround = false;
       ac.pos.z = groundElev + 0.6;
       ac.gamma = 2*DEG;
+      if (!world._takeoffOK){
+        world._takeoffOK = true;
+        if (window.recordMissionEvent) recordMissionEvent('takeoff', { tas:Math.round(ac.tas*KT), alt:Math.round(ac.pos.z*FT) });
+        else if (window.ScoreTracker) ScoreTracker.recordTakeoff();
+      }
     }
   } else {
     /* ---- airborne: load-factor aerodynamics ---- */
@@ -867,10 +874,11 @@ function damage(ac, amt, why){
   flash(0.6);
   world._cautionUntil = world.t + 2.2;
   if (window.F16Audio) F16Audio.event('newguy');
+  if (window.ScoreTracker) ScoreTracker.damage(amt, why || '');
   if (why) banner(why, 1.5);
   if (ac.integrity <= 0){
     ac.integrity = 0;
-    missionEnd('LOSS', 'AIRCRAFT DESTROYED');
+    missionEnd('LOSS', why || 'AIRCRAFT DESTROYED');
   }
 }
 
@@ -880,7 +888,18 @@ function flash(v){ _flash = Math.max(_flash, v); }
 function banner(txt, dur=2.2){ world.message = txt; world.messageT = dur; }
 
 function missionEnd(kind, txt){
+  if (world.outcome) return;
+  const gen = world._missionGen || 0;
   world.outcome = kind;
-  banner(txt, 99);
+  world.outcomeReason = txt || kind;
+  if (window.ReplayRecorder) ReplayRecorder.recordEvent('mission_end', { outcome:kind, reason:txt||kind, missionGen:gen });
+  banner(txt || kind, 99);
   if (window.F16Audio) F16Audio.event(kind==='WIN'?'win':'loss');
+  if (window.GameFlow && GameFlow.onMissionEnd) setTimeout(function(){
+    if ((world._missionGen || 0) === gen && world.outcome === kind) GameFlow.onMissionEnd(kind, txt || kind);
+  }, 650);
+  else if (window.MenuUI && MenuUI.showDebrief) setTimeout(function(){
+    if ((world._missionGen || 0) === gen && world.outcome === kind) MenuUI.showDebrief();
+  }, 650);
 }
+

@@ -27,7 +27,7 @@ const CONTROLS = [
   ['FIRE CONTROL', [
     ['M', 'Cycle master mode  (NAV \u2192 A-A \u2192 A-G \u2192 DGFT)'],
     ['B', 'Cycle master arm  (SAFE \u2192 ARM \u2192 SIM)'],
-    ['X', 'Cycle selected weapon station'],
+    ['X', 'Cycle selected weapon station (pods skipped)'],
     ['V', 'Designate boresight point (optional \u2014 tapping a contact on FCR / SAR / HAD also slews the pod)'],
     ['SPACE', 'Pickle (A-G) / fire gun (A-A, DGFT)'],
     ['L', 'Launch air-to-air missile'],
@@ -37,9 +37,10 @@ const CONTROLS = [
   ['NAV / SYSTEM', [
     ['WALKTHROUGH', 'New here? Click \u25b8 WALKTHROUGH at the top of this manual for a short guided strike that shows every step.'],
     ['N', 'Next steerpoint'],
-    ['H', 'Show / hide this manual'],
+    ['H', 'Open Scoreboard / Replays'],
+    ['F1 / ?', 'Show / hide this manual'],
     ['P', 'Pause'],
-    ['R', 'Restart mission (after win/loss)'],
+    ['R', 'Restart mission (active flight only)'],
     ['1 / 2 / 3 / 4', 'Difficulty: EASY / NORMAL / HARD / ACE (resets)'],
     ['F', 'Toggle FPS / frame-time meter'],
     ['\u2212 / =', 'Graphics quality down / up (LOW \u2192 MED \u2192 HIGH)'],
@@ -67,10 +68,12 @@ function boot(){
   setActive();
 
   buildControlsModal();
+  if (window.MenuUI) MenuUI.init();
+  if (window.GameFlow) GameFlow.init();
   bindKeys();
   resizeView();
   window.addEventListener('resize', resizeView);
-  banner('TAKEOFF RWY 36  \u2014  THROTTLE UP (\u2191)  \u00b7  H=CONTROLS  \u00b7  '+DIFFS[world.difficulty].name, 5);
+  banner('MAIN MENU - START WHEN READY', 2.5);
   last = performance.now();
   requestAnimationFrame(loop);
 }
@@ -100,9 +103,75 @@ function setQuality(i){
 
 /* ---- keyboard input ---- */
 const keys = {};
+
+/* ---- runtime state cleanup -----------------------------------------
+   Mission/replay transitions must clear transient HUD/audio/input state.
+   These helpers prevent stale launch banners, RWR warnings, long mission-end
+   messages, held keys, and previous cockpit selections from leaking into a
+   replay, a new mission, or the main menu. */
+function clearInputState(){
+  for (const k in keys) keys[k] = false;
+  if (typeof input !== 'undefined'){
+    input.pitch=0; input.roll=0; input.yaw=0;
+    input.throttleUp=false; input.throttleDown=false; input.fire=false;
+  }
+  try { if (typeof ctrl !== 'undefined'){ ctrl.pitch=0; ctrl.roll=0; ctrl.yaw=0; } } catch(e) {}
+}
+
+function resetCockpitState(){
+  world.activeMfdId='center';
+  world.steerpoint=1;
+  world.designated=false;
+  world.gndLock=null; world.airLock=null; world.harmLock=null;
+  world.tgpLaser=false;
+  world.masterArm='SAFE'; world.masterMode='NAV'; world.selectedStation=5;
+  world.dlEntry=''; world.datalinkTuned='';
+  if (world.ecm){ world.ecm.on=false; world.ecm.jam=[]; world.ecm.cursor=50; }
+  const defaults={left:'HSD',center:'FCR',right:'SMS'};
+  for (const id in MFDS){
+    const m=MFDS[id]; if (!m) continue;
+    m.page=defaults[id] || m.page || 'FCR';
+    m.range=20; m.azScan=60; m.sweep=-60; m.sweepDir=1;
+    m.locked=null; m.fcrMode='RWS';
+    m.tgpFov='WIDE'; m.tgpZoom=2; m.tgpTrack='AREA'; m.tgpPol='WHOT';
+    m.laser=false; m.dlRange=80;
+  }
+  try { DED_PAGE='CNI'; } catch(e) {}
+  if (typeof setActive === 'function') setActive();
+}
+
+function clearRuntimeState(opts){
+  opts = opts || {};
+  clearInputState();
+  if (!opts.keepMessage){ world.message=''; world.messageT=0; }
+  world._mslAwayUntil=0;
+  world._rwrActive=false;
+  world._flareT=0;
+  world._cautionUntil=0;
+  world._stall=false;
+  try { _flash=0; } catch(e) {}
+  if (!opts.keepLocks){
+    world.designated=false; world.gndLock=null; world.airLock=null; world.harmLock=null; world.tgpLaser=false;
+  }
+  if (opts.resetCockpit) resetCockpitState();
+  if (opts.clearProjectiles){
+    world.bombs.length=0; world.sams.length=0; world.effects.length=0;
+  }
+  if (opts.clearOutcome){ world.outcome=null; world.outcomeReason=''; }
+  if (opts.invalidateMission){ world._missionGen = (world._missionGen || 0) + 1; }
+  if (window.F16Audio && F16Audio.ready && opts.pauseAudio !== false){
+    F16Audio.update({paused:true, missile:false, lock:false, lowAlt:false, stall:false, caution:false, throttle:0});
+  }
+}
+window.clearRuntimeState = clearRuntimeState;
+window.resetCockpitState = resetCockpitState;
+window.clearInputState = clearInputState;
 function bindKeys(){
   window.addEventListener('keydown', e=>{
-    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+    const ae = document.activeElement;
+    const typing = ae && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName);
+    if (typing && e.code !== 'Escape') return;
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key) || e.code==='F1') e.preventDefault();
     if (keys[e.code]) return;       // ignore auto-repeat for one-shots
     keys[e.code] = true;
     onKeyDown(e.code);
@@ -111,47 +180,59 @@ function bindKeys(){
 }
 
 function onKeyDown(code){
-  if (window.F16Audio && !F16Audio.ready) F16Audio.init();   // resume audio on first gesture
+  if (window.GameFlow && GameFlow.handleKey(code)) return;
+  if (window.F16Audio && !F16Audio.ready) F16Audio.init();
   switch(code){
-    case 'KeyH':    toggleControls(); return;
+    case 'F1':
+    case 'Slash':   toggleControls(); return;
     case 'Escape':  toggleControls(false); return;
-    case 'Space':   pickle(); break;
-    case 'KeyL':    launchAAM(); break;
-    case 'KeyC':    dropFlares(); break;
-    case 'KeyG':    if (!world.ac.onGround){ world.ac.gear=!world.ac.gear; banner('GEAR '+(world.ac.gear?'DOWN':'UP'),1);} beep('select'); break;
-    case 'KeyB':    cycleArm(); beep('select'); break;
-    case 'KeyM':    cycleMode(); beep('select'); break;
-    case 'KeyX':    cycleStation(); beep('select'); break;
-    case 'KeyN':    world.steerpoint = (world.steerpoint % world.waypoints.length)+1; banner('STPT '+world.steerpoint,1); refreshAllMfd(); beep('beep'); break;
-    case 'KeyV':    designateTarget(); beep('beep'); break;
+    case 'Space':   if (window.GameFlow && !GameFlow.isActiveMission()) return; pickle(); break;
+    case 'KeyL':    if (window.GameFlow && !GameFlow.isActiveMission()) return; launchAAM(); break;
+    case 'KeyC':    if (window.GameFlow && !GameFlow.isActiveMission()) return; dropFlares(); break;
+    case 'KeyG':    if (window.GameFlow && !GameFlow.isActiveMission()) return; if (!world.ac.onGround){ world.ac.gear=!world.ac.gear; if (window.ReplayRecorder) ReplayRecorder.recordCockpitAction('gear', { gear:world.ac.gear?'DOWN':'UP' }); banner('GEAR '+(world.ac.gear?'DOWN':'UP'),1);} beep('select'); break;
+    case 'KeyB':    if (window.GameFlow && !GameFlow.isActiveMission()) return; cycleArm(); beep('select'); break;
+    case 'KeyM':    if (window.GameFlow && !GameFlow.isActiveMission()) return; cycleMode(); beep('select'); break;
+    case 'KeyX':    if (window.GameFlow && !GameFlow.isActiveMission()) return; cycleStation(); beep('select'); break;
+    case 'KeyN':    if (window.GameFlow && !GameFlow.isActiveMission()) return; world.steerpoint = (world.steerpoint % world.waypoints.length)+1; if (window.ReplayRecorder) ReplayRecorder.recordEvent('selection_changed', { field:'steerpoint', value:world.steerpoint }); banner('STPT '+world.steerpoint,1); refreshAllMfd(); beep('beep'); break;
+    case 'KeyV':    if (window.GameFlow && !GameFlow.isActiveMission()) return; designateTarget(); beep('beep'); break;
     case 'KeyU':    if (window.F16Audio){ banner('SOUND '+(F16Audio.toggle()?'ON':'OFF'),1); } break;
-    case 'KeyJ':    world.ecm.on=!world.ecm.on; banner('ECM '+(world.ecm.on?'ACTIVE':'OFF'),1); refreshAllMfd(); beep('select'); break;
-    case 'KeyP':    world.paused=!world.paused; banner(world.paused?'PAUSE':'',0.8); break;
-    case 'KeyF':    world._showPerf=!world._showPerf; banner('PERF '+(world._showPerf?'ON':'OFF'),1); break;
-    case 'Minus':   setQuality(world.quality-1); break;
-    case 'Equal':   setQuality(world.quality+1); break;
+    case 'KeyJ':    if (window.GameFlow && !GameFlow.isActiveMission()) return; world.ecm.on=!world.ecm.on; if (window.ScoreTracker) ScoreTracker.recordEcmToggle(); if (window.ReplayRecorder) ReplayRecorder.recordEvent('selection_changed', { field:'ecm', value:world.ecm.on?'ON':'OFF' }); banner('ECM '+(world.ecm.on?'ACTIVE':'OFF'),1); refreshAllMfd(); beep('select'); break;
+    case 'KeyP':    if (window.GameFlow && !GameFlow.isActiveMission()) return; world.paused=!world.paused; banner(world.paused?'PAUSE':'',0.8); break;
+    case 'KeyF':    if (window.GameFlow && !GameFlow.isActiveMission()) return; world._showPerf=!world._showPerf; banner('PERF '+(world._showPerf?'ON':'OFF'),1); break;
+    case 'Minus':   if (window.GameFlow && !GameFlow.isActiveMission()) return; setQuality(world.quality-1); break;
+    case 'Equal':   if (window.GameFlow && !GameFlow.isActiveMission()) return; setQuality(world.quality+1); break;
     case 'Digit1':  setDifficulty(0); break;
     case 'Digit2':  setDifficulty(1); break;
     case 'Digit3':  setDifficulty(2); break;
     case 'Digit4':  setDifficulty(3); break;
-    case 'KeyR':    if (world.outcome) restartMission(); break;
+    case 'KeyR':    if (window.GameFlow && GameFlow.isActiveMission()){ restartMission(); if (GameFlow.afterMissionRestart) GameFlow.afterMissionRestart(); } break;
   }
 }
 function beep(kind){ if (window.F16Audio) F16Audio.event(kind); }
 
 function cycleStation(){
-  const ids = world.stations.map(s=>s.id);
+  const list = (typeof weaponStations==='function') ? weaponStations() : (world.stations||[]).filter(s=>s.kind!=='pod'&&s.kind!=='tank');
+  const ids = list.map(s=>s.id);
+  if (!ids.length) return;
   const cur = ids.indexOf(world.selectedStation);
-  const next = ids[(cur+1)%ids.length];
+  const next = ids[(cur+1+ids.length)%ids.length];
   selectStation(next);
   const st = selectedStore();
   if (st) banner('STN '+st.id+'  '+st.wpn, 1);
 }
 
-function setDifficulty(i){
-  world.difficulty = clamp(i, 0, DIFFS.length-1);
-  banner('DIFFICULTY: '+DIFFS[world.difficulty].name+' \u2014 RESETTING', 2);
-  restartMission();
+function setDifficulty(i, opts){
+  opts = opts || {};
+  const newLevel = clamp(i, 0, DIFFS.length-1);
+  world.difficulty = newLevel;
+  if (window.GameFlow) GameFlow.setLevel(newLevel);
+  const active = !window.GameFlow || GameFlow.isActiveMission();
+  banner('DIFFICULTY: '+DIFFS[world.difficulty].name+(active && !opts.noRestart ? ' - RESETTING' : ''), active ? 2 : 1.2);
+  if (active && !opts.noRestart){
+    restartMission();
+    if (window.GameFlow && GameFlow.afterMissionRestart) GameFlow.afterMissionRestart();
+  }
+  if (window.MenuUI && MenuUI.refreshLevel) MenuUI.refreshLevel();
 }
 
 function designateTarget(){
@@ -162,7 +243,7 @@ function designateTarget(){
       const rel=vsub({x:bd.x,y:bd.y,z:bd.alt}, ac.pos);
       const ang=Math.acos(clamp(vdot(vnorm(rel), b.fwd),-1,1));
       if (ang<bestAng){ bestAng=ang; best=bd; } }
-    if (best){ world.airLock=best; banner('AIR LOCK \u2014 '+(best.kind||'BANDIT'),1.2); }
+    if (best){ world.airLock=best; if (window.ReplayRecorder) ReplayRecorder.recordEvent('selection_changed', { field:'airLock', target:best }); banner('AIR LOCK \u2014 '+(best.kind||'BANDIT'),1.2); }
     else banner('NO AIR TGT BORESIGHT',1.2);
   } else {
     const b=acBasis(ac);
@@ -181,10 +262,12 @@ function designateTarget(){
       if (score<bestScore){ bestScore=score; best=c; }
     }
     if (best){ world.gndLock=best; world.designated=true;
+      if (window.ReplayRecorder) ReplayRecorder.recordEvent('selection_changed', { field:'gndLock', target:best });
       banner('TGT DESIGNATED \u2014 '+(best.name||best.label||'GND'),1.2); }
     else {                                       // nothing ahead: fall back to a boresight ground point (CCIP-style)
       const ap=(typeof defaultTgpPoint==='function')?defaultTgpPoint():{x:ac.pos.x,y:ac.pos.y};
       world.gndLock={x:ap.x, y:ap.y, name:'GND PT', destroyed:false, _point:true}; world.designated=true;
+      if (window.ReplayRecorder) ReplayRecorder.recordEvent('selection_changed', { field:'gndPoint', x:ap.x, y:ap.y });
       banner('POINT DESIGNATED',1.2); }
   }
   refreshAllMfd();
@@ -338,7 +421,7 @@ function buildControlsModal(){
   modal.innerHTML = '<div class="cm-panel"><div class="cm-title">F-16C FLIGHT MANUAL <button class="cm-walk">\u25b8 FLIGHT SCHOOL</button></div>'+
     '<div class="cm-tabs">'+tabs+'</div>'+
     '<div class="cm-body">'+helpBodyHTML('CONTROLS')+'</div>'+
-    '<div class="cm-foot">click a tab \u00b7 press <b>H</b> or <b>Esc</b> to close</div></div>';
+    '<div class="cm-foot">click a tab \u00b7 press <b>F1</b>, <b>?</b> or <b>Esc</b> to close</div></div>';
   modal.addEventListener('click', e=>{
     if (e.target.closest && e.target.closest('.cm-walk')){ toggleControls(false); buildLessonMenu(); return; }
     if (e.target===modal){ toggleControls(false); return; }
@@ -361,18 +444,24 @@ function checkSteerpointAdvance(){
   const d = distTo(wp.x, wp.y);
   if (d < 900 && world.steerpoint < world.waypoints.length && wp.name!=='TGT'){
     world.steerpoint++;
+    if (window.ScoreTracker) ScoreTracker.recordWaypointAdvance();
     banner('STPT '+world.steerpoint+'  '+curWP().name, 1.4);
   }
 }
 
 function restartMission(){
   if (typeof TUT!=='undefined' && TUT.active){ TUT.active=false; if(TUT._paused){world.paused=false;TUT._paused=false;} ['tut-panel','tut-canvas'].forEach(id=>{const e=document.getElementById(id); if(e&&e.parentNode)e.parentNode.removeChild(e);}); }
+  if (window.ReplayPlayback && ReplayPlayback.active) ReplayPlayback.stop();
+  if (typeof clearRuntimeState === 'function') clearRuntimeState({ clearOutcome:true, clearProjectiles:true, resetCockpit:true, invalidateMission:true });
+  else world._missionGen = (world._missionGen || 0) + 1;
   world._tutorial=false;
+  world._pendingReplayRecord=null; world._pendingReplaySaved=false; world.outcomeReason='';
+  world._missionSeed = Date.now() ^ ((Math.random()*0x7fffffff)|0);
   const ac = world.ac;
   ac.pos = v3(0,-1000,0); ac.psi=0; ac.theta=0; ac.phi=0; ac.gamma=0; ac.alpha=0;
   ac.tas=0; ac.throttle=0; ac.gear=true; ac.onGround=true;
   ac.g=1; ac.aoa=0; ac.vy=0; ac.integrity=100; ac.flares=30;
-  world.t=0; world.paused=false; world.outcome=null; world.message=''; world.messageT=0;
+  world.t=0; world.paused=false; world.outcome=null; world.outcomeReason=null; world.message=''; world.messageT=0; world._takeoffOK=false;
   world.steerpoint=1; world.designated=false;
   world.gndLock=null; world.airLock=null; world.harmLock=null; world.tgpLaser=false;
   for (const k in MFDS){ if (MFDS[k]) MFDS[k].laser=false; }
@@ -381,7 +470,7 @@ function restartMission(){
   world.groundMovers.length=0; world.hvts.length=0; world.friendlies.length=0;
   world.structures.length=0; world.airstrips.length=0; world._reloadCD=0; world.dlEntry='';
   const QTY={1:2,2:2,3:2,4:2,5:3,6:3,7:4,8:1};
-  world.stations.forEach(s=>{ s.qty=QTY[s.id]||0; s.sel=(s.id===5); });
+  world.stations.forEach(s=>{ s.qty=QTY[s.id]||0; s.sel=(s.id===5); s.reloadT=0; });
   world.selectedStation=5;
   world.threats.forEach(t=>{ t.tracking=false; t.live=true; t.launchT=-99; });
   world.target.destroyed=false;
@@ -389,6 +478,9 @@ function restartMission(){
   buildMission();
   reseedTerrain();
   applyDifficulty();
+  if (window.ReplayUtils) ReplayUtils.ensureIds();
+  if (window.ScoreTracker && (!window.GameFlow || GameFlow.isActiveMission())) ScoreTracker.start();
+  if (window.ReplayRecorder && (!window.GameFlow || GameFlow.isActiveMission())) ReplayRecorder.start();
   DED_PAGE='CNI';
   banner('MISSION RESET \u2014 THROTTLE UP (\u2191)',3);
   refreshAllMfd();
@@ -423,7 +515,9 @@ function loop(now){
   if (dt > 0) world._dtEMA = world._dtEMA ? world._dtEMA*0.9 + dt*0.1 : dt;
 
   try {
-    if (!world.paused && !world.outcome){
+    if (window.GameFlow && GameFlow.isReplay && GameFlow.isReplay()){
+      GameFlow.update(dt);
+    } else if ((!window.GameFlow || GameFlow.isActiveMission()) && !world.paused && !world.outcome){
       sampleInput();
       world.t += dt;
       updateFlight(world.ac, dt);
@@ -439,6 +533,8 @@ function loop(now){
       updateEffects(dt);
       checkSteerpointAdvance();
       updateTutorial(dt);
+      if (window.ScoreTracker) ScoreTracker.update(dt);
+      if (window.ReplayRecorder) ReplayRecorder.update(dt);
     }
 
     // ---- out-the-window 3D + combat overlay (same canvas = pixel-aligned) ----
@@ -451,7 +547,8 @@ function loop(now){
 
     // ---- MFDs : instruments. Update all (cheap), but render ONE per frame
     //      (round-robin) so no single frame pays for all three at once. ----
-    for (const id in MFDS) MFDS[id].update(dt);
+    const mfdDt = (window.ReplayPlayback && ReplayPlayback.active) ? 0 : dt;
+    for (const id in MFDS) MFDS[id].update(mfdDt);
     const ids = Object.keys(MFDS);
     if (ids.length){ MFDS[ids[_mfdTick % ids.length]].render(); _mfdTick++; }
 
@@ -469,7 +566,7 @@ function loop(now){
         lowAlt:   !ac.onGround && agl < 160 && ac.vy < 0,
         stall:    !ac.onGround && !!world._stall,
         caution:  world._cautionUntil && world.t < world._cautionUntil,
-        paused:   world.paused || !!world.outcome,
+        paused:   (window.ReplayPlayback && ReplayPlayback.active) ? !ReplayPlayback.playing : (world.paused || !!world.outcome),
       });
     }
   } catch (err){
@@ -804,6 +901,7 @@ function startLesson(id){
   const L=LESSONS.find(l=>l.id===id) || LESSONS[0];
   toggleControls(false); removeIntroOffer(); removeLessonMenu();
   L.setup();
+  if (window.GameFlow) GameFlow.enterActiveFromLesson();
   TUT_STEPS=L.steps; TUT.active=true; TUT.step=0; TUT.okT=0; TUT._paused=false;
   TUT.lessonTag=L.tag; TUT.lessonName=L.name;
   buildTutOverlay(); enterStep(); refreshAllMfd();
@@ -844,7 +942,7 @@ function buildIntroOffer(){
   o.innerHTML='<div class="io-card"><div class="io-h">NEW PILOT?</div>'+
     '<div class="io-b">Flight School has short, guided lessons \u2014 takeoff &amp; navigation, targeting-pod and SAR strikes, air-to-air, datalink and ECM jamming. Each one points you through the steps.</div>'+
     '<div class="io-btns"><button class="io-go">\u25b8 OPEN FLIGHT SCHOOL</button><button class="io-skip">SKIP FOR NOW</button></div>'+
-    '<div class="io-foot">Replay any time from the <b>H</b> manual.</div></div>';
+    '<div class="io-foot">Replay any time from the <b>H</b> scoreboard.</div></div>';
   document.body.appendChild(o);
   o.querySelector('.io-go').addEventListener('click',()=>{ markIntroSeen(); buildLessonMenu(); });
   o.querySelector('.io-skip').addEventListener('click',()=>{ markIntroSeen(); removeIntroOffer(); });
@@ -858,9 +956,9 @@ function finishSplash(){
   if (_splashDone) return; _splashDone = true;
   const sp = document.getElementById('splash');
   if (sp){ sp.classList.add('hide'); setTimeout(()=>{ if (sp.parentNode) sp.parentNode.removeChild(sp); }, 700); }
-  // re-issue the takeoff prompt so the player sees it once the splash clears
-  banner('TAKEOFF RWY 36  \u2014  THROTTLE UP (\u2191)  \u00b7  H=MANUAL  \u00b7  '+DIFFS[world.difficulty].name, 6);
-  maybeOfferTutorial();
+  // show the main menu once the splash clears
+  if (window.GameFlow) GameFlow.returnToMenu();
+  else banner('MAIN MENU', 6);
 }
 function startup(){
   boot();                                  // build the sim & start rendering behind the splash

@@ -11,7 +11,10 @@ function bearingTo(x,y){            // true bearing from ownship (rad, from nort
 function distTo(x,y){ return Math.hypot(x-world.ac.pos.x, y-world.ac.pos.y); }
 
 /* ---------- weapons ---------- */
-function selectedStore(){ return world.stations.find(s=>s.id===world.selectedStation); }
+function isWeaponStation(s){ return !!s && ['aa','agm','ag','harm'].indexOf(s.kind)>=0; }
+function weaponStations(){ return (world.stations||[]).filter(isWeaponStation); }
+if (typeof window!=='undefined'){ window.isWeaponStation=isWeaponStation; window.weaponStations=weaponStations; }
+function selectedStore(){ const st=(world.stations||[]).find(s=>s.id===world.selectedStation); return isWeaponStation(st) ? st : null; }
 
 function pickle(){
   if (world.outcome) return;
@@ -31,23 +34,24 @@ function pickle(){
   if (st.kind==='ag'){                       // Mk-82: laser-guided if lasing, else CCIP ballistic
     st.qty--;
     const v = acVel(ac);
-    const bomb = { pos:{...ac.pos}, vel:{...v}, live: !sim, t:0 };
     const laze = laserDesignation();
+    const bomb = { pos:{...ac.pos}, vel:{...v}, live: !sim, t:0, weapon: laze ? 'LGB' : 'MK-82', origin:{...ac.pos}, trail:[{...ac.pos}] };
     if (laze){ bomb.guided = true; bomb.target = {...laze}; }
     world.bombs.push(bomb);
+    if (window.recordMissionEvent) recordMissionEvent('weapon_fired', { weapon:bomb.weapon, station:st.id, mode:world.masterMode });
     if (window.F16Audio) F16Audio.event('bomb');
     banner((sim?'SIM ':'') + (laze ? 'BOMB AWAY \u2014 LGB' : 'BOMB AWAY \u2014 CCIP'), 0.9);
   } else if (st.kind==='agm'){               // guided air-to-ground -> designation
     const tp = groundDesignation();
     if (!tp){ banner('AGM — NO GROUND LOCK (DESIGNATE w/ TGP/FCR)', 1.6); return; }
     st.qty--;
-    fireGuided(tp, 'AGM', !sim, null);
+    fireGuided(tp, 'AGM', !sim, null, st.wpn);
     banner((sim?'SIM ':'')+'RIFLE', 1.3);
   } else if (st.kind==='harm'){              // anti-radiation -> emitter
     const em = harmDesignation();
     if (!em){ banner('HARM — NO EMITTER IN RANGE', 1.6); return; }
     st.qty--;
-    fireGuided({x:em.x, y:em.y, z:terrainH(em.x,em.y)+3}, 'HARM', !sim, em);
+    fireGuided({x:em.x, y:em.y, z:terrainH(em.x,em.y)+3}, 'HARM', !sim, em, st.wpn);
     banner((sim?'SIM ':'')+'MAGNUM — '+em.name, 1.6);
   } else {
     banner('NO WEAPON SELECTED (X)', 1.2);
@@ -92,24 +96,26 @@ function harmDesignation(){
 }
 
 /* launch a guided surface weapon toward a fixed ground point */
-function fireGuided(tp, kind, live, emitter){
+function fireGuided(tp, kind, live, emitter, weaponName){
   const ac = world.ac, b = acBasis(ac);
   world.sams.push({
-    team:'BLUE', kind, groundPos:{...tp}, emitter: emitter||null, live,
-    pos:{...ac.pos}, vel: vscale(b.fwd, ac.tas+120),
+    team:'BLUE', kind, weapon:weaponName||kind, groundPos:{...tp}, emitter: emitter||null, live,
+    pos:{...ac.pos}, vel: vscale(b.fwd, ac.tas+120), origin:{...ac.pos},
     spd: kind==='HARM'?760:560, t:0, life: kind==='HARM'?22:18,
-    color: kind==='HARM'?'#ffd14d':'#a8ffc0', trail:[],
+    color: kind==='HARM'?'#ffd14d':'#a8ffc0', trail:[{...ac.pos}],
   });
   addEffect(ac.pos, 0.5, 'launch');
   if (window.F16Audio) F16Audio.event('missile');
   world._mslAwayUntil = world.t + 2.8;
+  if (window.recordMissionEvent) recordMissionEvent('weapon_fired', { weapon:weaponName||kind, kind:kind, targetId:emitter&&emitter.id||null, targetName:emitter&&emitter.name||'', targetType:kind==='HARM'?'sam_emitter':'ground_vehicle' });
 }
 
-let _gunT = 0;
+let _gunT = 0, _gunScoreT = -99;
 function fireGun(){
   const ac = world.ac;
   _gunT = 0.12;        // tracer flash
   if (window.F16Audio) F16Audio.event('gun');
+  if (window.recordMissionEvent && (!fireGun._lastEvt || world.t-fireGun._lastEvt>0.5)){ fireGun._lastEvt=world.t; recordMissionEvent('weapon_fired', { weapon:'GUN', mode:world.masterMode }); }
   // hit test: bandit within cone of boresight & range
   const b = acBasis(ac);
   for (const bd of world.bandits){
@@ -122,6 +128,7 @@ function fireGun(){
       bd.hp -= 0.12;                       // sustained fire whittles the target down
       if (bd.hp<=0){
         addEffect({x:bd.x,y:bd.y,z:bd.alt}, 1.1);
+        if (window.recordMissionEvent) recordMissionEvent('kill', { targetType:'air', targetName:bd.kind||'BANDIT', targetId:bd.id||null, weapon:'GUN' });
         banner('SPLASH — '+bd.kind, 1.6);
       }
     }
@@ -159,9 +166,10 @@ function launchAAM(){
   }
   if (!best){ banner('NO TARGET IN RANGE', 1.2); return; }
   st.qty--;
+  if (window.recordMissionEvent) recordMissionEvent('weapon_fired', { weapon:st.wpn, station:st.id, targetId:best.id||null, targetName:best.kind||'BANDIT', targetType:'air' });
   const arh = /120/.test(st.wpn);
-  world.sams.push({ team:'BLUE', pos:{...ac.pos}, vel: vscale(b.fwd, ac.tas+140),
-                    tgt:best, spd:620, t:0, life:16, color:'#a8ffc0', trail:[] });
+  world.sams.push({ team:'BLUE', kind:st.wpn, weapon:st.wpn, pos:{...ac.pos}, vel: vscale(b.fwd, ac.tas+140), origin:{...ac.pos},
+                    tgt:best, spd:620, t:0, life:16, color:'#a8ffc0', trail:[{...ac.pos}] });
   addEffect(ac.pos, 0.5, 'launch');                 // muzzle / motor flash
   if (window.F16Audio) F16Audio.event('missile');
   world._mslAwayUntil = world.t + 2.8;              // HUD "MSL AWAY" indicator
@@ -188,25 +196,32 @@ function updateBombs(dt){
     }
     bm.vel.z -= G0*dt;                                       // gravity always applies
     bm.pos.x += bm.vel.x*dt; bm.pos.y += bm.vel.y*dt; bm.pos.z += bm.vel.z*dt;
+    if (!bm.trail) bm.trail=[]; bm.trail.push({x:bm.pos.x,y:bm.pos.y,z:bm.pos.z}); if (bm.trail.length>22) bm.trail.shift();
     const g = terrainH(bm.pos.x, bm.pos.y);
     if (bm.pos.z <= g){
       addEffect({x:bm.pos.x,y:bm.pos.y,z:g}, 1.3);
-      if (bm.live) bombImpact(bm.pos.x, bm.pos.y);
+      if (window.recordMissionEvent) recordMissionEvent('projectile_impact', { weapon:bm.weapon||'MK82', kind:'bomb', x:bm.pos.x, y:bm.pos.y, z:g });
+      if (bm.live) bombImpact(bm.pos.x, bm.pos.y, bm.weapon||'MK82');
       world.bombs.splice(i,1);
     } else if (bm.t > 40){ world.bombs.splice(i,1); }
   }
 }
-function bombImpact(x,y){
+function bombImpact(x,y, weapon){
+  weapon = weapon || 'MK82';
   let hit=false;
   for (const b of world.target.buildings){
     if (b.destroyed) continue;
     if (Math.hypot(b.x-x, b.y-y) < 32){
       b.destroyed = true; b._deadT=world.t; hit=true;
       addEffect({x:b.x,y:b.y,z:terrainH(b.x,b.y)+b.h*0.5}, 2.2, 'kill');
+      if (window.recordMissionEvent) recordMissionEvent('kill', { targetType:b.primary?'primary':'structure', targetName:b.label||'BUILDING', targetId:b.id||null, weapon:weapon||'UNKNOWN' });
       if (b.primary){
         world.target.destroyed = true;
         banner('★ SHACK — TARGET DESTROYED ★', 3);
-        setTimeout(()=>{ if(!world.outcome) missionEnd('WIN','MISSION COMPLETE — RTB'); }, 1200);
+        const gen = world._missionGen || 0;
+        setTimeout(()=>{
+          if ((world._missionGen || 0) === gen && !world.outcome && (!window.GameFlow || GameFlow.isActiveMission())) missionEnd('WIN','MISSION COMPLETE — RTB');
+        }, 1200);
       }
     }
   }
@@ -216,6 +231,7 @@ function bombImpact(x,y){
     if (Math.hypot(v.x-x, v.y-y) < 30){
       v.destroyed=true; v._deadT=world.t; hit=true;
       addEffect({x:v.x,y:v.y,z:terrainH(v.x,v.y)+6}, 2.2, 'kill');
+      if (window.recordMissionEvent) recordMissionEvent('kill', { targetType:'hvt', targetName:v.name||'HVT', targetId:v.id||null, weapon:weapon||'UNKNOWN' });
       banner('HVT KILL \u2014 '+v.name, 1.8);
     }
   }
@@ -225,6 +241,7 @@ function bombImpact(x,y){
     if (Math.hypot(m.x-x, m.y-y) < 26){
       m.destroyed=true; m._deadT=world.t; if(m.live!==undefined) m.live=false; hit=true;
       addEffect({x:m.x,y:m.y,z:terrainH(m.x,m.y)+4}, 2.2, 'kill');
+      if (window.recordMissionEvent) recordMissionEvent('kill', { targetType:'mover', targetName:m.name||'GROUND', targetId:m.id||null, weapon:weapon||'UNKNOWN' });
       banner('GROUND KILL \u2014 '+m.name, 1.6);
     }
   }
@@ -234,6 +251,7 @@ function bombImpact(x,y){
     if (Math.hypot(s.x-x, s.y-y) < 34){
       s.destroyed=true; s._deadT=world.t; if(s.live!==undefined) s.live=false; s.tracking=false; hit=true;
       addEffect({x:s.x,y:s.y,z:terrainH(s.x,s.y)+(s.geom?s.geom.h*0.5:6)}, 2.4, 'kill');
+      if (window.recordMissionEvent) recordMissionEvent('kill', { targetType:'structure', targetName:s.name||'FACILITY', targetId:s.id||null, weapon:weapon||'UNKNOWN' });
       banner('STRUCTURE KILL \u2014 '+(s.name||'FACILITY'), 1.8);
     }
   }
@@ -243,10 +261,11 @@ function bombImpact(x,y){
     if (Math.hypot(t.x-x, t.y-y) < 30){
       t.destroyed=true; t._deadT=world.t; t.live=false; t.tracking=false; hit=true;
       addEffect({x:t.x,y:t.y,z:terrainH(t.x,t.y)+5}, 2.2, 'kill');
+      if (window.recordMissionEvent) recordMissionEvent('kill', { targetType:'sam', targetName:t.name||'SAM', targetId:t.id||null, weapon:weapon||'UNKNOWN' });
       banner('SAM KILL \u2014 '+(t.name||'SAM'), 1.8);
     }
   }
-  if (!hit) banner('MISS', 1.0);
+  if (!hit){ if (window.recordMissionEvent) recordMissionEvent('weapon_missed', { weapon:weapon||'UNKNOWN' }); banner('MISS', 1.0); }
 }
 
 function addEffect(pos, dur, kind){ world.effects.push({pos:{...pos}, t:0, dur, kind:kind||'blast'}); }
@@ -265,7 +284,7 @@ function updateMissiles(dt){
     if (m.team==='RED') tgtPos = ac.pos;
     else if (m.groundPos){
       // HARM keeps homing on a live emitter (follows small moves); else memory point
-      if (m.kind==='HARM' && m.emitter && m.emitter.live)
+      if ((m.kind==='HARM' || /HARM/.test(m.kind||'')) && m.emitter && m.emitter.live)
         tgtPos = {x:m.emitter.x, y:m.emitter.y, z:terrainH(m.emitter.x,m.emitter.y)+3};
       else tgtPos = m.groundPos;
     }
@@ -279,7 +298,7 @@ function updateMissiles(dt){
     m.spd = Math.min(m.team==='RED'?700:780, m.spd + 120*dt);
     m.vel = vscale(dir, m.spd);
     m.pos = vadd(m.pos, vscale(m.vel, dt));
-    if (m.trail){ m.trail.push({x:m.pos.x,y:m.pos.y,z:m.pos.z}); if (m.trail.length>16) m.trail.shift(); }
+    if (!m.trail) m.trail=[]; m.trail.push({x:m.pos.x,y:m.pos.y,z:m.pos.z}); if (m.trail.length>22) m.trail.shift();
     const d = vlen(vsub(tgtPos, m.pos));
     const hitGround = m.pos.z < terrainH(m.pos.x, m.pos.y);
 
@@ -288,15 +307,20 @@ function updateMissiles(dt){
       if (prox || hitGround){
         const ip = (d<200) ? tgtPos : {x:m.pos.x, y:m.pos.y, z:m.pos.z};
         addEffect(ip, 1.3);
+        if (window.recordMissionEvent) recordMissionEvent('projectile_impact', { weapon:m.weapon||m.kind||'MISSILE', kind:m.kind||'missile', x:ip.x, y:ip.y, z:ip.z });
         if (m.live!==false){
-          if (m.kind==='HARM'){
+          if (m.kind==='HARM' || /HARM/.test(m.kind||'')){
             if (m.emitter && m.emitter.live){
               m.emitter.live=false; m.emitter.tracking=false;
-              if (m.emitter.structure || m.emitter.mobile){ m.emitter.destroyed=true; m.emitter._deadT=world.t; }
-              banner('HARM KILL \u2014 '+m.emitter.name, 2.0);
+              // Treat a HARM/anti-radiation hit as a destroyed replay/TGP object,
+              // not just a silent emitter. This keeps destroyed emitters from being
+              // redrawn as active-looking TGP contacts during playback.
+              m.emitter.destroyed=true; m.emitter._deadT=world.t;
+              if (window.recordMissionEvent) recordMissionEvent('kill', { targetType:'sam', targetName:m.emitter.name||'EMITTER', targetId:m.emitter.id||null, weapon:m.weapon||m.kind||'AGM-88 HARM' });
+              banner('HARM KILL — '+m.emitter.name, 2.0);
             } else banner('HARM IMPACT', 1.2);
           } else {
-            bombImpact(ip.x, ip.y);            // AGM uses the same surface lethality
+            bombImpact(ip.x, ip.y, m.weapon||m.kind||'AGM');            // AGM uses the same surface lethality
           }
         }
         world.sams.splice(i,1);
@@ -306,6 +330,7 @@ function updateMissiles(dt){
 
     if (d < 40){
       addEffect(m.pos, 1.0);
+      if (window.recordMissionEvent) recordMissionEvent('projectile_impact', { weapon:m.weapon||m.kind||'MISSILE', kind:m.kind||'missile', x:m.pos.x, y:m.pos.y, z:m.pos.z });
       if (m.team==='RED'){
         // chance to defeat with high-G or flares
         let pHit = 0.8;
@@ -314,7 +339,7 @@ function updateMissiles(dt){
         if (Math.random() < Math.max(0.1,pHit)) damage(ac, 38, 'SAM HIT');
         else banner('SAM DEFEATED', 1.4);
       } else if (m.tgt){
-        m.tgt.hp = 0; addEffect({x:m.tgt.x,y:m.tgt.y,z:m.tgt.alt},1.2); banner('SPLASH — '+m.tgt.kind,1.6);
+        m.tgt.hp = 0; addEffect({x:m.tgt.x,y:m.tgt.y,z:m.tgt.alt},1.2); if (window.recordMissionEvent) recordMissionEvent('kill', { targetType:'air', targetName:m.tgt.kind||'BANDIT', targetId:m.tgt.id||null, weapon:m.kind||'AAM' }); banner('SPLASH — '+m.tgt.kind,1.6);
       }
       world.sams.splice(i,1);
     } else if (m.pos.z < terrainH(m.pos.x,m.pos.y)){
@@ -325,7 +350,7 @@ function updateMissiles(dt){
 
 /* ---------- SAM site logic ---------- */
 world._flareT = 0;
-function dropFlares(){ if (world.ac.flares>0){ world.ac.flares--; world._flareT = 2.2; banner('FLARES',0.6);} }
+function dropFlares(){ if (world.ac.flares>0){ world.ac.flares--; world._flareT = 2.2; if (window.recordMissionEvent) recordMissionEvent('flare', { remaining:world.ac.flares }); banner('FLARES',0.6);} }
 function updateThreats(dt){
   if (world._flareT>0) world._flareT -= dt;
   const ac = world.ac;
@@ -354,6 +379,7 @@ function updateThreats(dt){
         const dir = vnorm(vsub(ac.pos, {x:th.x,y:th.y,z:z+4}));
         world.sams.push({ team:'RED', pos:{x:th.x,y:th.y,z:z+4}, vel:vscale(dir,180), spd:180, t:0, life:16, color:th.color,
                           origin:{x:th.x,y:th.y,z:z+4}, src:th, name:th.name, trail:[{x:th.x,y:th.y,z:z+4}] });
+        if (window.ReplayRecorder) ReplayRecorder.recordEvent('missile_launch',{team:'RED',source:th.name||'SAM',kind:'SAM'});
         banner('★ MISSILE LAUNCH ★', 1.6); flash(0.4);
       }
     } else { th._dwell = 0; }
@@ -365,37 +391,135 @@ function updateThreats(dt){
   }
 }
 
-/* ---------- bandit motion + (at HARD/ACE) firing AI ---------- */
+/* ---------- bandit motion + firing AI ---------- */
+function banditSetState(bd, state, dur){
+  bd.aiState = state;
+  bd._stateUntil = world.t + (dur || 2.5);
+}
+function banditTurnToward(bd, want, maxRate, dt){
+  const step = clamp(angWrap(want - (bd.psi||0)), -maxRate*dt, maxRate*dt);
+  bd.psi = wrap2pi((bd.psi||0) + step);
+}
+function banditAltitudeToward(bd, targetAlt, dt){
+  const ground = terrainH(bd.x, bd.y) + 550;
+  const wanted = Math.max(ground, targetAlt || ground);
+  const climbRate = 38 + (world.difficulty||0)*7; // m/s, restrained to avoid vertical tornadoes
+  bd.alt = (bd.alt||ground) + clamp(wanted-(bd.alt||ground), -climbRate*dt, climbRate*dt);
+}
+function banditTargetState(bd, rng, verticalAbs){
+  const now = world.t;
+  if (bd._stateUntil && now < bd._stateUntil) return bd.aiState || 'INTERCEPT';
+  if (rng < 1250 || (rng < 2500 && verticalAbs > 1600)){ banditSetState(bd, 'EXTEND', 3.8 + Math.random()*1.8); return bd.aiState; }
+  if ((bd.hp||1) < 0.45 && rng < 9000){ banditSetState(bd, 'EVADE', 3.0 + Math.random()*2.0); return bd.aiState; }
+  if (rng > 15000){ banditSetState(bd, 'INTERCEPT', 2.5); return bd.aiState; }
+  if (rng > 4200){ banditSetState(bd, 'CHASE', 2.5); return bd.aiState; }
+  if (rng > 1800){ banditSetState(bd, Math.random()<0.55?'EVADE':'CHASE', 2.0 + Math.random()*1.5); return bd.aiState; }
+  banditSetState(bd, 'EXTEND', 4.0); return bd.aiState;
+}
 function updateBandits(dt){
   const ac = world.ac;
-  const shooters = (world.difficulty||0) >= 2;          // sim levels 3 & 4 (HARD, ACE)
+  const diff = world.difficulty || 0;
+  const shooters = diff >= 2;          // sim levels 3 & 4 (HARD, ACE)
   const RED_CAP = 8;
   let redInAir = 0; for (const s of world.sams) if (s.team==='RED') redInAir++;
+  const acFwd = {x:Math.sin(ac.psi), y:Math.cos(ac.psi)};
+
   for (const bd of world.bandits){
     if (bd.hp<=0) continue;
-    if (shooters && bd.kind==='HOSTILE'){
-      // basic intercept: turn toward the player
-      const want = Math.atan2(ac.pos.x-bd.x, ac.pos.y-bd.y);
-      bd.psi = wrap2pi(bd.psi + angWrap(want-bd.psi)*clamp(1.2*dt,0,1));
+    if (!bd.id && window.ReplayUtils) ReplayUtils.ensureIds();
+    if (bd._phase===undefined) bd._phase = Math.random()*Math.PI*2;
+    const hostile = bd.kind==='HOSTILE';
+    const dx = ac.pos.x - bd.x, dy = ac.pos.y - bd.y;
+    const range2 = Math.hypot(dx,dy);
+    const dz = ac.pos.z - bd.alt;
+    const away = wrap2pi(Math.atan2(-dx,-dy));
+    let desiredPsi = bd.psi, desiredAlt = bd.alt, targetSpeed = bd.spd || 220;
+
+    if (shooters && hostile && !world.outcome){
+      const missileThreat = world.sams.some(m=>m.team==='BLUE' && m.tgt===bd);
+      if (!bd.aiState) bd.aiState = 'INTERCEPT';
+      if (missileThreat && bd.aiState!=='EVADE'){
+        bd.aiState='EVADE'; bd._stateUntil=world.t + 4.5 + Math.random()*2.5; bd._evadeDir = Math.random()<0.5?-1:1;
+      } else if ((range2 < 1300 || (range2 < 3400 && Math.abs(dz)>2300)) && bd.aiState!=='EXTEND'){
+        bd.aiState='EXTEND'; bd._stateUntil=world.t + 4.0 + Math.random()*2.5; bd._extendPsi = away + (Math.random()*0.5-0.25);
+      } else if ((bd.aiState==='EXTEND' || bd.aiState==='EVADE') && world.t > (bd._stateUntil||0)){
+        bd.aiState='REATTACK'; bd._stateUntil=world.t + 2.4 + Math.random()*1.2;
+      } else if (bd.aiState==='REATTACK' && world.t > (bd._stateUntil||0)){
+        bd.aiState = range2 > 6500 ? 'INTERCEPT' : 'CHASE';
+      } else if (bd.aiState!=='EXTEND' && bd.aiState!=='EVADE' && bd.aiState!=='REATTACK'){
+        bd.aiState = range2 > 8500 ? 'INTERCEPT' : (range2 > 2300 ? 'CHASE' : 'EXTEND');
+        if (bd.aiState==='EXTEND'){ bd._stateUntil=world.t+4.5; bd._extendPsi=away; }
+      }
+
+      if (bd.aiState==='INTERCEPT'){
+        const lead = clamp(range2/5000,0.15,1.2);
+        const tx = ac.pos.x + acFwd.x * ac.tas * lead;
+        const ty = ac.pos.y + acFwd.y * ac.tas * lead;
+        desiredPsi = Math.atan2(tx-bd.x, ty-bd.y);
+        desiredAlt = ac.pos.z + 250;
+        targetSpeed = diff>=3 ? 270 : 250;
+      } else if (bd.aiState==='CHASE'){
+        // Aim at the player's rear quarter instead of the exact aircraft position.
+        const side = Math.sin(world.t*0.45 + bd._phase) > 0 ? 1 : -1;
+        const tx = ac.pos.x - acFwd.x*2600 + Math.cos(ac.psi)*side*700;
+        const ty = ac.pos.y - acFwd.y*2600 - Math.sin(ac.psi)*side*700;
+        desiredPsi = Math.atan2(tx-bd.x, ty-bd.y) + Math.sin(world.t*0.8+bd._phase)*0.10;
+        desiredAlt = ac.pos.z + Math.sin(world.t*0.55+bd._phase)*350;
+        targetSpeed = diff>=3 ? 255 : 240;
+      } else if (bd.aiState==='EVADE'){
+        desiredPsi = away + (bd._evadeDir||1)*(0.55 + 0.25*Math.sin(world.t*1.1+bd._phase));
+        desiredAlt = ac.pos.z + (bd._evadeDir||1)*650*Math.sin(world.t*0.7+bd._phase);
+        targetSpeed = diff>=3 ? 285 : 265;
+      } else if (bd.aiState==='EXTEND'){
+        desiredPsi = (bd._extendPsi!==undefined?bd._extendPsi:away) + Math.sin(world.t*0.65+bd._phase)*0.16;
+        desiredAlt = ac.pos.z + Math.sin(world.t*0.35+bd._phase)*500;
+        targetSpeed = diff>=3 ? 295 : 275;
+      } else { // REATTACK
+        const tx = ac.pos.x - acFwd.x*1700;
+        const ty = ac.pos.y - acFwd.y*1700;
+        desiredPsi = Math.atan2(tx-bd.x, ty-bd.y);
+        desiredAlt = ac.pos.z + 150;
+        targetSpeed = 265;
+      }
     } else {
-      bd.psi = wrap2pi(bd.psi + 0.05*dt*Math.sin(world.t*0.3+bd.x));   // idle wander
+      bd.aiState = bd.aiState || 'PATROL';
+      desiredPsi = wrap2pi(bd.psi + 0.35*Math.sin(world.t*0.18+bd._phase));
+      desiredAlt = bd.alt + Math.sin(world.t*0.25+bd._phase)*120;
+      targetSpeed = bd.kind==='HVA-AIR' ? 150 : 210;
     }
+
+    const close = range2 < 2400;
+    const maxTurn = (shooters && hostile) ? (close ? 0.34 : (diff>=3 ? 0.52 : 0.44)) : 0.20;
+    const dpsi = clamp(angWrap(desiredPsi-bd.psi), -maxTurn*dt, maxTurn*dt);
+    bd.psi = wrap2pi(bd.psi + dpsi);
+
+    const ground = terrainH(bd.x,bd.y);
+    desiredAlt = clamp(desiredAlt, ground+700, 12000);
+    // Avoid unrealistic top/bottom stacking at close range: extend laterally and converge altitude slowly.
+    if (close && Math.abs(dz)>1800) desiredAlt = bd.alt + clamp(ac.pos.z-bd.alt, -250, 250);
+    const climbRate = shooters && hostile ? 42 : 22;
+    bd.alt += clamp(desiredAlt-bd.alt, -climbRate*dt, climbRate*dt);
+    bd.alt = Math.max(bd.alt, terrainH(bd.x,bd.y)+500);
+
+    bd.spd += clamp(targetSpeed-bd.spd, -35*dt, 30*dt);
+    bd.spd = clamp(bd.spd, bd.kind==='HVA-AIR'?120:165, 310);
     bd.x += Math.sin(bd.psi)*bd.spd*dt;
     bd.y += Math.cos(bd.psi)*bd.spd*dt;
 
-    // weapons employment: shoot an AAM when in range and roughly nose-on
-    if (shooters && bd.kind==='HOSTILE' && !world.outcome){
+    // Weapons employment: only in sane intercept/chase geometry, not while extending/evasive.
+    if (shooters && hostile && !world.outcome && bd.aiState!=='EXTEND' && bd.aiState!=='EVADE'){
       const rel = vsub(ac.pos, {x:bd.x, y:bd.y, z:bd.alt});
       const rng = vlen(rel);
       const fwd = { x:Math.sin(bd.psi), y:Math.cos(bd.psi), z:0 };
       const ang = Math.acos(clamp(vdot(vnorm(rel), fwd), -1, 1));
-      const cool = (world.difficulty>=3) ? 7 : 11;        // ACE shoots more often than HARD
-      if (rng < 10*NM && rng > 1200 && ang < 28*DEG && redInAir < RED_CAP && (world.t - (bd._lastShot||-99)) > cool){
+      const cool = diff>=3 ? 8.5 : 12;
+      if (rng < 10*NM && rng > 1800 && Math.abs(rel.z)<2600 && ang < 26*DEG && redInAir < RED_CAP && (world.t - (bd._lastShot||-99)) > cool){
         bd._lastShot = world.t; redInAir++;
         const dir = vnorm(rel);
-        world.sams.push({ team:'RED', pos:{x:bd.x,y:bd.y,z:bd.alt}, vel:vscale(dir, bd.spd+160),
-                          spd:520, t:0, life:14, color:'#ff5050', trail:[] });
-        banner('\u2605 MISSILE LAUNCH (AIR) \u2605', 1.4); flash(0.35);
+        world.sams.push({ team:'RED', kind:'RED_AAM', weapon:'RED_AAM', pos:{x:bd.x,y:bd.y,z:bd.alt}, vel:vscale(dir, bd.spd+160),
+                          spd:520, t:0, life:14, color:'#ff5050', origin:{x:bd.x,y:bd.y,z:bd.alt}, trail:[{x:bd.x,y:bd.y,z:bd.alt}] });
+        if (window.recordMissionEvent) recordMissionEvent('missile_launch', { weapon:'RED_AAM', actor:bd.id||null, targetId:'player' });
+        banner('★ MISSILE LAUNCH (AIR) ★', 1.4); flash(0.35);
       }
     }
   }
