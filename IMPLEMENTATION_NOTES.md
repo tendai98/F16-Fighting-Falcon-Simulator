@@ -5,7 +5,7 @@
 - Main menu before mission start.
 - Existing 1-4 level selection only: EASY, NORMAL, HARD, ACE.
 - H key opens Scoreboard / Replays.
-- Help / controls moved to F1 or ?.
+- Help / controls now use Esc; H opens Scoreboard / Replays.
 - Post-mission debrief with automatic mission save.
 - Uppercase alias validation: A-Z and 0-9 only, maximum 16 characters.
 - Country selection stored as a 2-letter code.
@@ -146,3 +146,17 @@ This build includes a replay performance/storage optimization pass:
 - Replay playback now uses a cached snapshot index instead of scanning from the beginning of the replay every frame.
 - Replay cockpit application is cached so MFD refreshes happen only when the recorded cockpit state changes, not on every animation frame.
 - Replay stop releases loaded replay arrays and caches to reduce memory retained after exiting playback.
+
+## Help / Flight School polish
+
+Updated after menu and training feedback:
+
+- `Esc` is now the primary Help / Controls key.
+- `H` remains dedicated to Scoreboard / Replays.
+- F1 no longer opens the in-game help panel.
+- Help and Flight School overlays now render above the main menu layer and hide stale menu modals before opening.
+- Closing the Flight School selector from the main menu returns to the main menu instead of leaving a blank screen.
+- The EW Strike / Attack Under Jamming lesson now uses a fixed-frequency two-band SA-6 training emitter. It does not frequency-hop in that beginner lesson.
+- ECM lesson pointers now highlight the actual ECM spectrum peaks instead of the whole MFD screen.
+- The datalink tuning lesson now points at the DED TUNE OSB instead of the entire DED display.
+- Lesson startup now preserves lesson-specific MFD/page setup, such as opening the ECM page on the left MFD for EW Strike.

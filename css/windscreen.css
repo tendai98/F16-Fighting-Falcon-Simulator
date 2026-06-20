@@ -80,12 +80,12 @@ body { padding: 0; overflow: hidden; }
 }
 
 /* =================================================
-   CONTROLS POPUP (toggled with H)
+   CONTROLS POPUP (toggled with Esc)
    ================================================= */
 #controls-modal {
   position: fixed;
   inset: 0;
-  z-index: 999;
+  z-index: 3700;
   display: none;
   align-items: center;
   justify-content: center;
@@ -294,7 +294,7 @@ body { padding: 0; overflow: hidden; }
 
 /* ---- lesson menu ---- */
 #lesson-menu{
-  position:fixed; inset:0; z-index:62; display:flex; align-items:center; justify-content:center;
+  position:fixed; inset:0; z-index:3700; display:flex; align-items:center; justify-content:center;
   background:rgba(2,6,3,0.74); backdrop-filter:blur(2px); font-family:'Courier New',monospace;
 }
 #lesson-menu .lm-card{

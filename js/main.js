@@ -38,7 +38,7 @@ const CONTROLS = [
     ['WALKTHROUGH', 'New here? Click \u25b8 WALKTHROUGH at the top of this manual for a short guided strike that shows every step.'],
     ['N', 'Next steerpoint'],
     ['H', 'Open Scoreboard / Replays'],
-    ['F1 / ?', 'Show / hide this manual'],
+    ['Esc', 'Show / hide this manual'],
     ['P', 'Pause'],
     ['R', 'Restart mission (active flight only)'],
     ['1 / 2 / 3 / 4', 'Difficulty: EASY / NORMAL / HARD / ACE (resets)'],
@@ -171,7 +171,7 @@ function bindKeys(){
     const ae = document.activeElement;
     const typing = ae && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName);
     if (typing && e.code !== 'Escape') return;
-    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key) || e.code==='F1') e.preventDefault();
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key) || e.code==='F1' || e.code==='Escape') e.preventDefault();
     if (keys[e.code]) return;       // ignore auto-repeat for one-shots
     keys[e.code] = true;
     onKeyDown(e.code);
@@ -183,9 +183,9 @@ function onKeyDown(code){
   if (window.GameFlow && GameFlow.handleKey(code)) return;
   if (window.F16Audio && !F16Audio.ready) F16Audio.init();
   switch(code){
-    case 'F1':
-    case 'Slash':   toggleControls(); return;
-    case 'Escape':  toggleControls(false); return;
+    case 'F1':     return;
+    case 'Slash':  toggleControls(); return;
+    case 'Escape': toggleControls(true); return;
     case 'Space':   if (window.GameFlow && !GameFlow.isActiveMission()) return; pickle(); break;
     case 'KeyL':    if (window.GameFlow && !GameFlow.isActiveMission()) return; launchAAM(); break;
     case 'KeyC':    if (window.GameFlow && !GameFlow.isActiveMission()) return; dropFlares(); break;
@@ -411,7 +411,7 @@ function showHelpTab(modal, id){
   modal.querySelectorAll('.cm-tab').forEach(b=>b.classList.toggle('active', b.dataset.tab===id));
   modal.querySelector('.cm-body').innerHTML = helpBodyHTML(id);
 }
-/* ---- help / reference menu (H) ---- */
+/* ---- help / reference menu (Esc) ---- */
 function buildControlsModal(){
   if (document.getElementById('controls-modal')) return;
   const modal = document.createElement('div');
@@ -421,9 +421,9 @@ function buildControlsModal(){
   modal.innerHTML = '<div class="cm-panel"><div class="cm-title">F-16C FLIGHT MANUAL <button class="cm-walk">\u25b8 FLIGHT SCHOOL</button></div>'+
     '<div class="cm-tabs">'+tabs+'</div>'+
     '<div class="cm-body">'+helpBodyHTML('CONTROLS')+'</div>'+
-    '<div class="cm-foot">click a tab \u00b7 press <b>F1</b>, <b>?</b> or <b>Esc</b> to close</div></div>';
+    '<div class="cm-foot">click a tab \u00b7 press <b>Esc</b> to close</div></div>';
   modal.addEventListener('click', e=>{
-    if (e.target.closest && e.target.closest('.cm-walk')){ toggleControls(false); buildLessonMenu(); return; }
+    if (e.target.closest && e.target.closest('.cm-walk')){ toggleControls(false); if (window.MenuUI && MenuUI.hideAll) MenuUI.hideAll(); buildLessonMenu(); return; }
     if (e.target===modal){ toggleControls(false); return; }
     const t = e.target.closest && e.target.closest('.cm-tab');
     if (t){ showHelpTab(modal, t.dataset.tab); }
@@ -584,13 +584,65 @@ function loop(now){
 
 const HUD_LABELS = { throttle:'AIRSPEED (\u2191/\u2193 throttle)', speed:'AIRSPEED', alt:'ALTITUDE', mode:'MODE / ARM', steer:'FLIGHT PATH', rwr:'HUD TARGET BOX' };
 const HUD_ALIAS  = { throttle:'speed', rwr:'steer' };
+function tutMfd(point){
+  if (!point) return null;
+  try {
+    if (point.page){
+      const pref=point.mfd && MFDS[point.mfd];
+      if (pref && pref.page===point.page) return pref;
+      for (const id of Object.keys(MFDS)){ const m=MFDS[id]; if (m && m.page===point.page) return m; }
+    }
+    return MFDS[point.mfd||'center'] || null;
+  } catch(e){ return null; }
+}
+function tutCanvasRect(m,x,y,w,h){
+  if (!m || !m.canvas) return null;
+  const r=m.canvas.getBoundingClientRect(); if (!r.width || !r.height) return null;
+  const sx=r.width/Math.max(1,m.W||m.canvas.width||1), sy=r.height/Math.max(1,m.H||m.canvas.height||1);
+  return { left:r.left+x*sx, top:r.top+y*sy, width:w*sx, height:h*sy };
+}
+function tutUnionRects(rects){
+  rects=(rects||[]).filter(Boolean); if(!rects.length) return null;
+  let l=Infinity,t=Infinity,r=-Infinity,b=-Infinity;
+  for (const q of rects){ l=Math.min(l,q.left); t=Math.min(t,q.top); r=Math.max(r,q.left+q.width); b=Math.max(b,q.top+q.height); }
+  return { left:l, top:t, width:r-l, height:b-t };
+}
 function tutRect(point){
   if (!point) return null;
   try {
-    if (point.osb){ const m=MFDS[point.mfd||'center']; const el=m&&m.osbEls&&m.osbEls[point.osb];
-      if (el){ const r=el.getBoundingClientRect(); if(r.width) return r; } return null; }
-    if (point.mfd && point.screen){ const m=MFDS[point.mfd]; const el=m&&m.canvas;
-      if (el){ const r=el.getBoundingClientRect(); if(r.width) return r; } return null; }
+    if (point.osb){
+      const m=tutMfd(point); const el=m&&m.osbEls&&m.osbEls[point.osb];
+      if (el){ const r=el.getBoundingClientRect(); if(r.width) return r; }
+      return null;
+    }
+    if (point.ecmPeaks){
+      const m=tutMfd(point); const sp=m&&m._ecmSpec;
+      if (sp && sp.peaks && sp.peaks.length){
+        let peaks=sp.peaks.filter(pk=>pk && pk.th && pk.th.live && !pk.th.destroyed);
+        if (point.uncoveredOnly) peaks=peaks.filter(pk=>!bandCovered(pk.f));
+        if (!peaks.length) peaks=sp.peaks.slice();
+        peaks.sort((a,b)=>(b.ph||0)-(a.ph||0));
+        const maxCount = point.allPeaks ? peaks.length : Math.min(peaks.length, point.maxPeaks || 3);
+        const rects=[];
+        for (let i=0;i<maxCount;i++){
+          const pk=peaks[i], ph=Math.max(8, pk.ph||12);
+          rects.push(tutCanvasRect(m, pk.sx-9, sp.yBase-ph-12, 18, ph+22));
+        }
+        const u=tutUnionRects(rects); if (u) return u;
+      }
+    }
+    if (point.ecmSlots){
+      const m=tutMfd(point), cells=m&&m._ecmSlots;
+      if (cells && cells.length){
+        const rects=cells.map(c=>tutCanvasRect(m,c.x,c.y,c.w,c.h));
+        const u=tutUnionRects(rects); if(u) return u;
+      }
+    }
+    if (point.mfd && point.screen){
+      const m=tutMfd(point); const el=m&&m.canvas;
+      if (el){ const r=el.getBoundingClientRect(); if(r.width) return r; }
+      return null;
+    }
     if (point.el){ const el=document.querySelector(point.el); if(el){ const r=el.getBoundingClientRect(); if(r.width) return r; } return null; }
     if (point.hud){
       const key = HUD_ALIAS[point.hud] || point.hud;
@@ -779,7 +831,8 @@ function setupECM(){ tutResetEZ();
   world.selectedStation=7; world.stations.forEach(st=>st.sel=(st.id===7));
 }
 function setupECMStrike(){ tutResetEZ();
-  isolateSAM('SA-6', 2.00, 3500);                   // 2-band SAM; start far out so you can set up the jam before the ring
+  const s = isolateSAM('SA-6', 2.00, 3500);          // 2-band training SAM; fixed-frequency for beginner EW-strike work
+  if (s){ s.hopCapable=false; s.trainingFixedFreq=true; s._hopT=999999; }
   world.masterMode='NAV'; world.masterArm='SAFE';
   world.selectedStation=7; world.stations.forEach(st=>st.sel=(st.id===7));   // HARM ready
   world.ac.flares=30;
@@ -861,26 +914,26 @@ const L_DEF = [
 const L_DLNK = [
   {t:'DATALINK (AWACS)', point:null, b:'An AWACS shares its radar picture if you tune your datalink to its frequency \u2014 revealing contacts you can\u2019t see yourself.'},
   {t:'OPEN THE DED', point:{osb:'T5',mfd:'right'}, b:'Bring up the DED (T5) on the right MFD.', done:()=>Object.keys(MFDS).some(k=>MFDS[k].page==='DED')},
-  {t:'TUNE THE FREQUENCY', point:{mfd:'right',screen:true,cap:'DED \u2014 TUNE (B4)'}, b:'Open TUNE (B4) and key in an AWACS frequency \u2014 124.85 (E-3) or 126.50 (E-2) \u2014 then ENTER.', done:()=>datalinkActive()},
+  {t:'TUNE THE FREQUENCY', point:{osb:'B4',mfd:'right',page:'DED',cap:'DED \u2014 TUNE (B4)'}, b:'Open TUNE (B4) and key in an AWACS frequency \u2014 124.85 (E-3) or 126.50 (E-2) \u2014 then ENTER.', done:()=>datalinkActive()},
   {t:'READ THE PICTURE', point:{mfd:'left',screen:true,cap:'HSD'}, pause:true, b:'Link up! The HSD now paints cyan rings on AWACS-known contacts and the DLNK page shows the feed. Press GOT IT.'},
   {t:'DATALINK COMPLETE', point:null, b:'Datalink extends your awareness well past your own radar \u2014 tune it early on HARD and ACE.'},
 ];
 const L_ECM = [
   {t:'ECM \u2014 JAMMING A SAM', point:null, b:'A basic SA-3 is ahead. It radiates on a single radar frequency \u2014 perfect for learning to jam. You\u2019ll lock that frequency from stand-off, then fly in and watch it burn through. Open the ECM page.'},
   {t:'OPEN THE ECM PAGE', point:{osb:'B4',mfd:'left'}, b:'From the HSD, press B4 (ECM) to open the spectrum analyzer \u2014 it sweeps 0\u2013100 and shows a peak for every emitter\u2019s radar frequency.', done:()=>Object.keys(MFDS).some(k=>MFDS[k].page==='ECM')},
-  {t:'POD ON', key:'J', point:{osb:'B1',mfd:'left'}, b:'Switch the EW pod ON \u2014 press B1 on the ECM page (or the J key).', done:()=>world.ecm.on},
-  {t:'LOCK THE SA-3 FREQUENCY', point:{mfd:'left',screen:true,cap:'ECM \u2014 tap the peak'}, b:'The SA-3 is the tall peak on the spectrum. Tap it to lock its frequency into a jam slot \u2014 or slide the \u25c4\u25ba cursor onto it and press SEL. The peak turns blue (JAMMED) and it can\u2019t track you.', done:()=>{const s=world.threats.find(t=>t.live&&t.bands); return !!s && world.ecm.on && allBandsCovered(s);}},
+  {t:'POD ON', key:'J', point:{osb:'B1',mfd:'left',page:'ECM'}, b:'Switch the EW pod ON \u2014 press B1 on the ECM page (or the J key).', done:()=>world.ecm.on},
+  {t:'LOCK THE SA-3 FREQUENCY', point:{mfd:'left',page:'ECM',ecmPeaks:true,allPeaks:true,cap:'ECM \u2014 tap the peak'}, b:'The SA-3 is the tall peak on the spectrum. Tap it to lock its frequency into a jam slot \u2014 or slide the \u25c4\u25ba cursor onto it and press SEL. The peak turns blue (JAMMED) and it can\u2019t track you.', done:()=>{const s=world.threats.find(t=>t.live&&t.bands); return !!s && world.ecm.on && allBandsCovered(s);}},
   {t:'WATCH BURN-THROUGH', point:{hud:'steer'}, b:'Jammed, the SA-3 can\u2019t see you \u2014 fly in. As you cross its burn-through range (an inner ring, not drawn on the HSD) it reacquires and the peak goes red. Jamming buys stand-off, not invulnerability.', live:()=>{const s=world.threats.find(t=>t.live&&t.bands); return s?('nearest: '+(emitterJammed(s)?'JAMMED':'BURNED THROUGH')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>{const s=world.threats.find(t=>t.live&&t.bands); return !!s && distTo(s.x,s.y)<ecmBurnRange(s)*1.05;}},
   {t:'ECM COMPLETE', point:null, b:'You have 8 jam slots: a multi-band SAM (SA-6/SA-10) must have EVERY peak covered before it\u2019s suppressed, and spreading the pod over more slots weakens each, so burn-through comes sooner \u2014 jam only what you need. Capable SAMs frequency-HOP, so a peak will jump; find it and re-lock. When a SAM dies, hops a band away, or you fly out of its detection range, its peak drops and the stale jam slot frees itself \u2014 so your slots always reflect what\u2019s actually radiating. Pre-load a heavy SAM network\u2019s frequencies before you push in.'},
 ];
 const L_ECMSTK = [
-  {t:'EW STRIKE \u2014 ATTACK UNDER JAMMING', point:null, b:'ECM lets you walk into a SAM ring it can\u2019t shoot through, then kill it from inside. This SA-6 uses TWO frequencies and WILL fire if you don\u2019t jam it. You start well outside its ring \u2014 set up as you close. The ECM spectrum is already up on the left MFD.'},
-  {t:'POD ON', key:'J', point:{osb:'B1',mfd:'left'}, b:'Switch the EW pod ON (J, or B1 on the ECM page) before you reach the ring.', done:()=>world.ecm.on},
-  {t:'LOCK BOTH BANDS', point:{mfd:'left',screen:true,cap:'ECM \u2014 lock BOTH peaks'}, b:'The SA-6 shows TWO peaks. Lock BOTH \u2014 tap each peak (or slide the \u25c4\u25ba cursor and press SEL). One peak isn\u2019t enough; it\u2019s suppressed only when every band is covered.', live:()=>{const s=world.threats.find(t=>t.live&&t.bands); if(!s)return''; return 'COVERED '+s.bands.filter(f=>bandCovered(f)).length+'/'+s.bands.length;}, done:()=>{const s=world.threats.find(t=>t.live&&t.bands); return !!s && world.ecm.on && allBandsCovered(s);}},
-  {t:'PENETRATE UNDER COVER', point:{hud:'steer'}, b:'Jammed, the SA-6 can\u2019t see you. Fly INTO the ring \u2014 the status holds JAMMED and it can\u2019t shoot. (If a peak hops to a new frequency, re-lock it.)', live:()=>{const s=world.threats.find(t=>t.live&&t.bands); return s?((emitterJammed(s)?'JAMMED':'EXPOSED!')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>{const s=world.threats.find(t=>t.live&&t.bands); return !!s && distTo(s.x,s.y)<s.radius*0.96 && emitterJammed(s);}},
+  {t:'EW STRIKE \u2014 ATTACK UNDER JAMMING', point:null, b:'ECM lets you walk into a SAM ring it can\u2019t shoot through, then kill it from inside. This training SA-6 uses TWO FIXED frequencies and WILL fire if you don\u2019t jam both. It will not frequency-hop in this beginner lesson. The ECM spectrum is already up on the left MFD.'},
+  {t:'POD ON', key:'J', point:{osb:'B1',mfd:'left',page:'ECM'}, b:'Switch the EW pod ON (J, or B1 on the ECM page) before you reach the ring.', done:()=>world.ecm.on},
+  {t:'LOCK BOTH BANDS', point:{mfd:'left',page:'ECM',ecmPeaks:true,allPeaks:true,cap:'ECM \u2014 lock BOTH peaks'}, b:'The SA-6 shows TWO fixed peaks. Lock BOTH \u2014 tap each peak (or slide the \u25c4\u25ba cursor and press SEL). One peak isn\u2019t enough; it\u2019s suppressed only when every band is covered.', live:()=>{const s=world.threats.find(t=>t.live&&t.bands); if(!s)return''; return 'COVERED '+s.bands.filter(f=>bandCovered(f)).length+'/'+s.bands.length;}, done:()=>{const s=world.threats.find(t=>t.live&&t.bands); return !!s && world.ecm.on && allBandsCovered(s);}},
+  {t:'PENETRATE UNDER COVER', point:{hud:'steer'}, b:'Jammed, the SA-6 can\u2019t see you. Fly INTO the ring \u2014 the status holds JAMMED and it can\u2019t shoot. The frequencies stay fixed in this lesson, so keep both peaks covered.', live:()=>{const s=world.threats.find(t=>t.live&&t.bands); return s?((emitterJammed(s)?'JAMMED':'EXPOSED!')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>{const s=world.threats.find(t=>t.live&&t.bands); return !!s && distTo(s.x,s.y)<s.radius*0.96 && emitterJammed(s);}},
   {t:'ARM THE HARM', key:'B', point:{hud:'mode'}, b:'Inside the ring and still jamming. Go ARM (B) \u2014 your AGM-88 HARM is selected. Don\u2019t overfly the site: get too close and it burns through the jam.', done:()=>world.masterArm==='ARM'},
   {t:'MAGNUM \u2014 KILL IT', key:'SPACE', point:{hud:'steer'}, b:'Fire the HARM with SPACE. It homes on the SA-6\u2019s radar \u2014 which is still radiating \u2014 and kills it while it\u2019s blind to you. MAGNUM!', done:()=>{const s=world.threats.find(t=>t.name==='SA-6'); return (!s||!s.live||s.destroyed) || world.sams.some(m=>m.kind==='HARM');}},
-  {t:'EW STRIKE COMPLETE', point:null, b:'That\u2019s the play: jam every band to deny the shot, penetrate under cover, and kill from inside the ring before burn-through reaches you. Against a network, lock only the bands you must \u2014 fewer slots keeps the pod strong and burn-through tight. Pre-load known frequencies, push in jammed, and roll the SAMs up one at a time. Each kill drops that SAM’s peak and frees its jam slots automatically.'},
+  {t:'EW STRIKE COMPLETE', point:null, b:'That\u2019s the play: jam every band to deny the shot, penetrate under cover, and kill from inside the ring before burn-through reaches you. Against a network, lock only the bands you must \u2014 fewer slots keeps the pod strong and burn-through tight. Advanced SAMs may hop later; this lesson keeps the radar fixed so you can learn the attack flow first. Each kill drops that SAM’s peak and frees its jam slots automatically.'},
 ];
 
 const LESSONS = [
@@ -892,7 +945,7 @@ const LESSONS = [
   {id:'aa',     tag:'6 \u00b7 A-A',      name:'AIR-TO-AIR \u2014 Intercept',           desc:'Lock a bandit on radar and take a missile shot.',     setup:setupAA,      steps:L_AA},
   {id:'dlnk',   tag:'7 \u00b7 DATALINK', name:'DATALINK \u2014 AWACS Picture',         desc:'Tune the datalink and read the shared picture.',      setup:setupDatalink, steps:L_DLNK},
   {id:'ecm',    tag:'8 \u00b7 ECM',      name:'ECM \u2014 Jamming an SA-3',            desc:'Jam a basic SAM\u2019s radar and learn burn-through.',    setup:setupECM,     steps:L_ECM},
-  {id:'ewstk',  tag:'9 \u00b7 EW STRIKE', name:'EW STRIKE \u2014 Attack Under Jamming',  desc:'Jam a 2-band SA-6, penetrate under cover, and HARM it from inside the ring.', setup:setupECMStrike, steps:L_ECMSTK},
+  {id:'ewstk',  tag:'9 \u00b7 EW STRIKE', name:'EW STRIKE \u2014 Attack Under Jamming',  desc:'Jam a fixed-frequency 2-band SA-6, penetrate under cover, and HARM it from inside the ring.', setup:setupECMStrike, steps:L_ECMSTK},
 ];
 let TUT_STEPS = L_BASICS;
 let TUT = { active:false, step:0, okT:0, _paused:false, lessonTag:'', lessonName:'' };
@@ -901,7 +954,7 @@ function startLesson(id){
   const L=LESSONS.find(l=>l.id===id) || LESSONS[0];
   toggleControls(false); removeIntroOffer(); removeLessonMenu();
   L.setup();
-  if (window.GameFlow) GameFlow.enterActiveFromLesson();
+  if (window.GameFlow) GameFlow.enterActiveFromLesson({ preserveCockpit:true });
   TUT_STEPS=L.steps; TUT.active=true; TUT.step=0; TUT.okT=0; TUT._paused=false;
   TUT.lessonTag=L.tag; TUT.lessonName=L.name;
   buildTutOverlay(); enterStep(); refreshAllMfd();
@@ -916,7 +969,10 @@ function endTutorial(){
 
 /* ---- lesson menu + first-launch offer ---- */
 function removeLessonMenu(){ const m=document.getElementById('lesson-menu'); if(m&&m.parentNode)m.parentNode.removeChild(m); }
+function closeLessonMenu(){ removeLessonMenu(); if (window.GameFlow && GameFlow.state===GAME_STATES.MENU && window.MenuUI) MenuUI.showMainMenu(); }
 function buildLessonMenu(){
+  if (window.MenuUI && MenuUI.hideAll) MenuUI.hideAll();
+  if (typeof toggleControls === 'function') toggleControls(false);
   removeIntroOffer();
   if (document.getElementById('lesson-menu')) return;
   const m=document.createElement('div'); m.id='lesson-menu';
@@ -927,9 +983,9 @@ function buildLessonMenu(){
     '<div class="lm-foot"><button class="lm-close">CLOSE</button></div></div>';
   document.body.appendChild(m);
   m.addEventListener('click',e=>{
-    if (e.target===m){ removeLessonMenu(); return; }
+    if (e.target===m){ closeLessonMenu(); return; }
     const b=e.target.closest&&e.target.closest('.lm-item'); if(b){ startLesson(b.dataset.id); return; }
-    if (e.target.closest&&e.target.closest('.lm-close')) removeLessonMenu();
+    if (e.target.closest&&e.target.closest('.lm-close')) closeLessonMenu();
   });
 }
 let _introOffered=false;

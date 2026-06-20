@@ -76,9 +76,10 @@ var GameFlow = {
     world.paused = false;
   },
 
-  enterActiveFromLesson: function(){
+  enterActiveFromLesson: function(opts){
+    opts = opts || {};
     if (window.ReplayPlayback && ReplayPlayback.active) ReplayPlayback.stop();
-    if (typeof clearRuntimeState === 'function') clearRuntimeState({ clearOutcome:true, clearProjectiles:true, resetCockpit:true, invalidateMission:true });
+    if (typeof clearRuntimeState === 'function') clearRuntimeState({ clearOutcome:true, clearProjectiles:true, resetCockpit:!opts.preserveCockpit, invalidateMission:true });
     this._ending = false;
     this.lastOutcome = null;
     this.lastOutcomeText = '';
@@ -202,8 +203,8 @@ var GameFlow = {
     }
     if (code === 'Escape'){
       if (window.MenuUI && MenuUI.handleEscape && MenuUI.handleEscape()) return true;
-      if (this.state !== GAME_STATES.ACTIVE && this.state !== GAME_STATES.FLIGHT_SCHOOL){ this.returnToMenu(); return true; }
-      return false;
+      if (typeof toggleControls === 'function') toggleControls(true);
+      return true;
     }
     if (this.isReplay()){
       if (code === 'Space' || code === 'KeyP') ReplayPlayback.toggle();
@@ -212,7 +213,8 @@ var GameFlow = {
       else return false;
       return true;
     }
-    if (code === 'F1' || code === 'Slash'){
+    if (code === 'F1') return true;
+    if (code === 'Slash'){
       if (typeof toggleControls === 'function') toggleControls();
       return true;
     }

@@ -34,7 +34,7 @@ var MenuUI = {
           '<div class="menu-buttons">'+
             '<button data-action="start">START</button>'+
             '<button data-action="scoreboard">SCOREBOARD / REPLAYS <span>H</span></button>'+
-            '<button data-action="help">HELP / CONTROLS <span>F1 / ?</span></button>'+
+            '<button data-action="help">HELP / CONTROLS <span>ESC</span></button>'+
             '<button data-action="school">FLIGHT SCHOOL</button>'+
             '<button data-action="reset" class="secondary">RESET LOCAL DATA</button>'+
           '</div>'+
@@ -56,7 +56,12 @@ var MenuUI = {
       else if (a === 'start') GameFlow.startMission(false);
       else if (a === 'scoreboard') self.openReplayBrowser();
       else if (a === 'help') { if (typeof toggleControls === 'function') toggleControls(true); }
-      else if (a === 'school') { self.hideAll(); if (typeof buildLessonMenu === 'function') buildLessonMenu(); }
+      else if (a === 'school') {
+        if (typeof toggleControls === 'function') toggleControls(false);
+        self.hideAll();
+        if (typeof removeIntroOffer === 'function') removeIntroOffer();
+        if (typeof buildLessonMenu === 'function') buildLessonMenu();
+      }
       else if (a === 'reset') self.resetLocalData();
       else if (a === 'continue') self.saveDebriefThen('menu');
       else if (a === 'watch-current') self.saveDebriefThen('watch');
@@ -274,7 +279,7 @@ var MenuUI = {
     if (ReplayPlayback && ReplayPlayback.active){ GameFlow.returnToMenu(); return true; }
     var controls = document.getElementById('controls-modal');
     if (controls && controls.classList.contains('show')){ toggleControls(false); return true; }
-    if (document.getElementById('lesson-menu')){ if (typeof removeLessonMenu === 'function') removeLessonMenu(); return true; }
+    if (document.getElementById('lesson-menu')){ if (typeof closeLessonMenu === 'function') closeLessonMenu(); else if (typeof removeLessonMenu === 'function') removeLessonMenu(); return true; }
     if (GameFlow.state === GAME_STATES.REPLAY_BROWSER){ if (GameFlow.closeReplayBrowser) GameFlow.closeReplayBrowser(); else GameFlow.returnToMenu(); return true; }
     if (GameFlow.state === GAME_STATES.DEBRIEF){ GameFlow.returnToMenu(); return true; }
     return false;
