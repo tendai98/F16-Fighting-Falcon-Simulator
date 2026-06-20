@@ -312,7 +312,7 @@ const HELP_REF = {
   ],
   SENSORS: [
     ['RADAR / EO', [
-      ['FCR', 'Fire Control Radar. B1 cycles RWS / SAR-GMT / HAD. L1-L4 set range. In AIR SUPER, terrain and low altitude can mask aircraft until line-of-sight opens.'],
+      ['FCR', 'Fire Control Radar. B1 cycles RWS / SAR-GMT / HAD. L1-L4 set range. In AIR SUPER, terrain can mask aircraft until line-of-sight opens.'],
       ['RWS', 'Range-While-Search air picture (B-scope). Lock bandits for AIM-120 / 9X.'],
       ['SAR / GMT', 'Ground map ahead of the jet. Tags moving vehicles, TELs and buried sites. Tap a contact to designate it \u2014 the TGP slews onto it automatically.'],
       ['TGP', 'Targeting Pod \u2014 IR/EO camera on the designated point. L1-L4 = 4 zoom stages, R1 WIDE/NARO, R2 AREA/POINT, R3 laser (LGB), R4 WHOT/BHOT. Footer shows SR (slant range) + DEP (look-down angle).'],
@@ -922,14 +922,14 @@ const L_GUN = [
   {t:'GUNS COMPLETE', point:null, b:'Good gun kills come from controlled closure, a steady target track and short bursts when the LCOS is red. Yellow is range. Red is shoot.'},
 ];
 const L_LOW = [
-  {t:'LOW-LEVEL SAM ATTACK', point:null, b:'Radar horizon matters. Below 1500 m AGL you can terrain-mask a SAM and penetrate part of its ring. Get too close and it reacquires.'},
-  {t:'STAY LOW', point:{hud:'alt'}, b:'Hold low altitude below 1500 m above ground. Use gentle pitch and terrain awareness; do not climb into the radar line-of-sight.', live:()=>{const agl=world.ac.pos.z-terrainH(world.ac.pos.x,world.ac.pos.y); return 'AGL '+Math.round(agl)+' m';}, done:()=>{const agl=world.ac.pos.z-terrainH(world.ac.pos.x,world.ac.pos.y); return agl>180&&agl<1500;}},
-  {t:'PENETRATE MASKED', point:{hud:'steer'}, b:'Fly toward the SAM while staying low. Notice it does not track while the terrain/radar horizon masks you.', live:()=>{const s=world.threats.find(t=>t.live); return s?((s.tracking?'TRACKING':'MASKED')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>{const s=world.threats.find(t=>t.live); return !!s && distTo(s.x,s.y)<s.radius*0.82 && !s.tracking;}},
-  {t:'REACQUIRE WARNING', point:{hud:'steer'}, b:'As you get closer, the SAM can reacquire even at low altitude. Be ready to jam, shoot, or break.', live:()=>{const s=world.threats.find(t=>t.live); return s?((s.tracking?'TRACKING':'MASKED')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>world.threats.some(t=>t.live&&t.tracking)},
+  {t:'LOW-LEVEL SAM ATTACK', point:null, b:'Low-level attacks are about terrain discipline and quick sensor work. SAMs now engage normally inside their threat ring, so stay low for cover, use the HSD for the tactical picture, then pop up or designate when you are ready to shoot.'},
+  {t:'STAY LOW', point:{hud:'alt'}, b:'Hold a controlled low-level profile below 1500 m AGL. Terrain can block your outside-view overlays, so cross-check the HSD and TGP.', live:()=>{const agl=world.ac.pos.z-terrainH(world.ac.pos.x,world.ac.pos.y); return 'AGL '+Math.round(agl)+' m';}, done:()=>{const agl=world.ac.pos.z-terrainH(world.ac.pos.x,world.ac.pos.y); return agl>180&&agl<1500;}},
+  {t:'ENTER THE RING', point:{hud:'steer'}, b:'Fly toward the SAM. Once you enter its range, expect tracking and be ready to jam, dispense, or shoot.', live:()=>{const s=world.threats.find(t=>t.live); return s?((s.tracking?'TRACKING':'SEARCH')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>{const s=world.threats.find(t=>t.live); return !!s && distTo(s.x,s.y)<s.radius*0.95;}},
+  {t:'THREAT ACTIVE', point:{hud:'steer'}, b:'The SAM should now track normally in its detection ring. Do not rely on an altitude exploit; defeat it with jamming, maneuvering, or HARM.', live:()=>{const s=world.threats.find(t=>t.live); return s?((s.tracking?'TRACKING':'SEARCH')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>world.threats.some(t=>t.live&&t.tracking)},
   {t:'A-G + ARM', key:'M / B', point:{hud:'mode'}, b:'Set master mode A-G and Master Arm ARM or SIM while staying low.', done:()=>world.masterMode==='A-G'&&world.masterArm!=='SAFE'},
-  {t:'LOCK EMITTER', point:{mfd:'center',screen:true,cap:'HAD'}, b:'On the HAD/FCR page, tap the SAM emitter to lock it for HARM. The HARM should already be selected.', done:()=>!!world.harmLock},
-  {t:'MAGNUM LOW', key:'SPACE', point:{hud:'steer'}, b:'Fire the HARM from low level with SPACE, then stay low or break away as needed.', done:()=>world.sams.some(s=>s.kind==='HARM')||world.threats.every(t=>!t.live)},
-  {t:'LOW-LEVEL COMPLETE', point:null, b:'Low-level ingress narrows radar detection, but it is not invisibility. Close range, line-of-sight openings and pop-ups let the SAM reacquire.'},
+  {t:'LOCK EMITTER', point:{mfd:'center',screen:true,cap:'HAD'}, b:'On the HAD/FCR page, tap the SAM emitter to lock it for HARM. A designator symbol now appears in the outside view when the target is visible.', done:()=>!!world.harmLock},
+  {t:'MAGNUM LOW', key:'SPACE', point:{hud:'steer'}, b:'Fire the HARM with SPACE, then stay low or break away as needed.', done:()=>world.sams.some(s=>s.kind==='HARM')||world.threats.every(t=>!t.live)},
+  {t:'LOW-LEVEL COMPLETE', point:null, b:'Low-level ingress helps with terrain cover and visual clutter, but SAMs still work when you enter their range. Use the HSD, sensor designator and HARM workflow to prosecute the threat.'},
 ];
 const L_SEAD = [
   {t:'SEAD \u2014 KILL A SAM', point:null, b:'Now take the fight to the air defences. A single SA-6 SAM site is ahead. You\u2019ll find its radar, lock it and destroy it with a HARM anti-radiation missile. (It won\u2019t fire during training.)'},
@@ -952,7 +952,7 @@ const L_DEF = [
         banner('\u2605 MISSILE LAUNCH \u2014 COUNTERMEASURES!',1.8); if(typeof flash==='function') flash(0.4); } },
     done:()=>world.ac.flares < (TUT._flareStart!=null?TUT._flareStart:30)},
   {t:'HOLD THE BREAK', point:{hud:'steer'}, b:'Keep the turn in and dispense more countermeasures if it\u2019s still tracking. \u201cSAM DEFEATED\u201d means you spoofed the shot.', done:()=>!world.sams.some(s=>s.team==='RED')},
-  {t:'DEFENCE COMPLETE', point:null, b:'The THR page is your survival picture \u2014 it shows who can shoot and what\u2019s inbound. Flares decoy the missile and the hard turn makes it overshoot. You carry 30; use them in pairs as a missile closes and keep some in reserve. Combine with terrain masking and jamming (ECM lesson) to survive the threat rings.'},
+  {t:'DEFENCE COMPLETE', point:null, b:'The THR page is your survival picture \u2014 it shows who can shoot and what\u2019s inbound. Flares decoy the missile and the hard turn makes it overshoot. You carry 30; use them in pairs as a missile closes and keep some in reserve. Combine countermeasures, jamming and hard maneuvering to survive the threat rings.'},
 ];
 const L_DLNK = [
   {t:'DATALINK (AWACS)', point:null, b:'An AWACS shares its radar picture if you tune your datalink to its frequency \u2014 revealing contacts you can\u2019t see yourself.'},
@@ -987,7 +987,7 @@ const LESSONS = [
   {id:'def',    tag:'5 \u00b7 DEFENCE',  name:'DEFENCE \u2014 Threat Page & Countermeasures', desc:'Read the THREAT/EWS page, then beat the missile with flares/chaff + a hard break.', setup:setupDefense, steps:L_DEF},
   {id:'aa',     tag:'6 \u00b7 A-A MSL',  name:'AIR-TO-AIR \u2014 Missile Engagement',  desc:'Lock a bandit on radar and take a missile shot.',     setup:setupAA,      steps:L_AA},
   {id:'aagun',  tag:'7 \u00b7 A-A GUN',  name:'AIR-TO-AIR \u2014 Gun Employment',      desc:'Use the LCOS reticle, range cues and cannon bursts.', setup:setupGun,     steps:L_GUN},
-  {id:'low',    tag:'8 \u00b7 LOW LEVEL',name:'LOW-LEVEL \u2014 Radar Horizon Attack', desc:'Use terrain/radar horizon to penetrate a SAM ring.', setup:setupLowLevel, steps:L_LOW},
+  {id:'low',    tag:'8 \u00b7 LOW LEVEL',name:'LOW-LEVEL \u2014 SAM Attack', desc:'Fly low, manage SAM tracking, designate and shoot.', setup:setupLowLevel, steps:L_LOW},
   {id:'dlnk',   tag:'9 \u00b7 DATALINK', name:'DATALINK \u2014 AWACS Picture',         desc:'Tune the datalink and read the shared picture.',      setup:setupDatalink, steps:L_DLNK},
   {id:'ecm',    tag:'10 \u00b7 ECM',     name:'ECM \u2014 Jamming an SA-3',            desc:'Jam a basic SAM\u2019s radar and learn burn-through.',    setup:setupECM,     steps:L_ECM},
   {id:'ewstk',  tag:'11 \u00b7 EW STRIKE', name:'EW STRIKE \u2014 Attack Under Jamming', desc:'Jam a fixed-frequency 2-band SA-6, penetrate under cover, and HARM it from inside the ring.', setup:setupECMStrike, steps:L_ECMSTK},

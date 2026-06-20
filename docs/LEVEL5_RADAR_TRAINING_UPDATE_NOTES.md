@@ -8,7 +8,7 @@ This update adds the requested air-combat and training refinements:
 - Gun SFX is slightly higher-pitched and faster-buzzing while keeping the deeper BRRRT body.
 - Enemy fighters now have finite flares/chaff, delayed reactions, and a chance to fail to deploy countermeasures, making missile kills achievable.
 - Player aircraft roll/control authority is increased for tighter dogfight maneuvering without making the flight model totally unconstrained.
-- SAMs now use a gameplay radar-horizon / terrain-masking check: low-level ingress below 1500 m AGL can delay SAM tracking until close range or line-of-sight opens.
+- SAMs now use a gameplay radar-horizon / terrain-masking check: low-level ingress below 700 m AGL can delay SAM tracking until close range or line-of-sight opens.
 - Level 5 FCR now applies terrain/low-altitude masking to air contacts, so aircraft using valleys/mountains may not appear until geometry opens.
 - Help menu now documents gun reticle colors, gun behavior, enemy finite countermeasures, Level 5, and FCR masking.
 - Flight School adds two new lessons plus a low-level attack lesson:

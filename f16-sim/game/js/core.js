@@ -897,10 +897,11 @@ function updateFlight(ac, dt){
 }
 
 
-/* Radar horizon / terrain masking helpers.
-   The sim map is compressed, so this is a gameplay radar model rather than a
-   geodesy model: low aircraft can terrain-mask a SAM or FCR until they get close
-   enough for the radar to reacquire. */
+/* Terrain line-of-sight helper for visual occlusion and sensor displays.
+   SAM gameplay no longer uses the low-altitude radar-horizon gate: if the
+   aircraft enters a live SAM threat ring, the emitter can track and fire again.
+   Terrain still occludes outside-window markers so overlays do not shine through
+   solid mountains. */
 function terrainLineClear(ax,ay,az,bx,by,bz, margin){
   margin = margin===undefined ? 70 : margin;
   const dx=bx-ax, dy=by-ay, dz=bz-az;
@@ -914,32 +915,16 @@ function terrainLineClear(ax,ay,az,bx,by,bz, margin){
   return true;
 }
 function samRadarCanSee(th, pos){
-  if (!th || !pos) return false;
-  const d=Math.hypot(pos.x-th.x, pos.y-th.y);
-  const groundA=terrainH(pos.x,pos.y), agl=pos.z-groundA;
-  const srcZ=terrainH(th.x,th.y)+38;
-  const reacq=Math.min(4600, Math.max(2500, (th.radius||7000)*0.38));
-  if (d <= reacq) return terrainLineClear(th.x,th.y,srcZ,pos.x,pos.y,pos.z,35) || d<2500;
-  // Updated gameplay radar horizon: anything below 1500 m AGL can remain
-  // masked outside close-range reacquisition.  Between 1500 and 2200 m, the
-  // radar gradually gains detection range.
-  if (agl < 1500) return false;
-  if (agl < 2200){
-    const extra=(agl-1500)/700 * Math.max(2200,(th.radius||7000)*0.42);
-    if (d > reacq + extra) return false;
-  }
-  return terrainLineClear(th.x,th.y,srcZ,pos.x,pos.y,pos.z,55);
+  return !!(th && pos);
 }
 function fcrTerrainCanSee(pos){
   if (!pos || !world || !world.ac) return false;
   const ac=world.ac;
   const d=Math.hypot(pos.x-ac.pos.x,pos.y-ac.pos.y);
-  const tgtAgl=pos.z-terrainH(pos.x,pos.y), ownAgl=ac.pos.z-terrainH(ac.pos.x,ac.pos.y);
   if (d < 4500) return true;
-  // In the air-superiority level, mountains/low-level flight can hide aircraft
-  // from FCR until geometry opens up.
+  // AIR SUPER still lets terrain make radar pictures less perfect, but there is
+  // no global AGL cutoff.  Contacts appear when the line of sight opens.
   if ((world.difficulty||0)>=4){
-    if ((tgtAgl < 1500 || ownAgl < 1500) && d > 7*NM) return false;
     if (!terrainLineClear(ac.pos.x,ac.pos.y,ac.pos.z,pos.x,pos.y,pos.z,90)) return false;
   }
   return true;

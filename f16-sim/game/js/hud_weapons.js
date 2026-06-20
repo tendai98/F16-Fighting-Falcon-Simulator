@@ -997,6 +997,64 @@ function drawCombatHUD(r3, ctx){
     }
   }
 
+
+  /* ---- sensor designator cue in the outside view ----
+     Sensor locks now get a dedicated HUD/POV symbol independent of weapon
+     selection.  The TGP/FCR/HAD can designate a ground object or air target,
+     and the pilot should be able to see that selected object out the window as
+     soon as it is actually visible in the camera view. */
+  {
+    const red = (typeof C_RED!=='undefined') ? C_RED : '#ff5b5b';
+    const yel = (typeof C_YEL!=='undefined') ? C_YEL : '#ffd24d';
+    const hot = (typeof C_HOT!=='undefined') ? C_HOT : NEONHI;
+    const drawGroundDesignator = (obj, label, color, laserOn)=>{
+      if (!obj || obj.destroyed) return;
+      const gz = (obj.z!==undefined) ? obj.z : terrainH(obj.x,obj.y);
+      const h = obj.h || (obj.geom&&obj.geom.h) || 18;
+      const p3 = {x:obj.x, y:obj.y, z:gz + h + 14};
+      const p = r3.project(p3);
+      if (!p || p.z<=1 || !hudGroundLOS(p3,35)) return;
+      const pulse = 0.65 + 0.35*Math.sin(world.t*8);
+      const s = laserOn ? 18 : 14;
+      ctx.save();
+      ctx.strokeStyle = laserOn ? red : color;
+      ctx.fillStyle = laserOn ? red : color;
+      ctx.lineWidth = laserOn ? 2.0 : 1.5;
+      ctx.globalAlpha = laserOn ? 1 : pulse;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y-s); ctx.lineTo(p.x+s, p.y); ctx.lineTo(p.x, p.y+s); ctx.lineTo(p.x-s, p.y); ctx.closePath();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(p.x-s-10,p.y); ctx.lineTo(p.x-s-3,p.y);
+      ctx.moveTo(p.x+s+3,p.y); ctx.lineTo(p.x+s+10,p.y);
+      ctx.moveTo(p.x,p.y-s-10); ctx.lineTo(p.x,p.y-s-3);
+      ctx.moveTo(p.x,p.y+s+3); ctx.lineTo(p.x,p.y+s+10); ctx.stroke();
+      if (laserOn){ ctx.beginPath(); ctx.arc(p.x,p.y,s+8,0,2*Math.PI); ctx.stroke(); }
+      ctx.globalAlpha = 1;
+      ctx.font='bold 11px "Courier New"'; ctx.textAlign='left';
+      const rng = Math.hypot(obj.x-ac.pos.x, obj.y-ac.pos.y, p3.z-ac.pos.z)/NM;
+      ctx.fillText((laserOn?'LZR ':'DESIG ')+label+' '+rng.toFixed(1)+'NM', p.x+s+13, p.y-5);
+      ctx.restore();
+    };
+    const drawAirDesignator = (bd)=>{
+      if (!bd || bd.hp<=0) return;
+      const p3 = banditPos(bd), p = r3.project(p3);
+      if (!p || p.z<=1) return;
+      ctx.save();
+      ctx.strokeStyle = yel; ctx.fillStyle = yel; ctx.lineWidth=1.5;
+      const s=20;
+      ctx.strokeRect(p.x-s,p.y-s,s*2,s*2);
+      ctx.beginPath(); ctx.moveTo(p.x-s-10,p.y); ctx.lineTo(p.x-s-3,p.y); ctx.moveTo(p.x+s+3,p.y); ctx.lineTo(p.x+s+10,p.y); ctx.stroke();
+      ctx.font='bold 11px "Courier New"'; ctx.textAlign='left';
+      ctx.fillText('A-A DESIG '+(Math.hypot(bd.x-ac.pos.x,bd.y-ac.pos.y,bd.alt-ac.pos.z)/NM).toFixed(1)+'NM', p.x+s+12, p.y-6);
+      ctx.restore();
+    };
+    const g = world.gndLock || world.harmLock;
+    if (g) drawGroundDesignator(g, (g.name||g.label||'GND'), hot, !!world.tgpLaser && !!world.gndLock && g===world.gndLock);
+    else if (world.designated && world.target && !world.target.destroyed) drawGroundDesignator(world.target, 'TGT', hot, !!world.tgpLaser);
+    if (world.airLock) drawAirDesignator(world.airLock);
+  }
+
   /* ---- A-A gun computed target-tracking reticle + lead cue ---- */
   if ((world.masterMode==='A-A' || world.masterMode==='DGFT') && !ac.onGround){
     const sol = bestGunSolution();

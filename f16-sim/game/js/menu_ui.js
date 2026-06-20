@@ -36,10 +36,8 @@ var MenuUI = {
             '<button data-action="scoreboard">SCOREBOARD / REPLAYS <span>H</span></button>'+
             '<button data-action="help">HELP / CONTROLS <span>ESC</span></button>'+
             '<button data-action="school">FLIGHT SCHOOL</button>'+
-            '<button data-action="reset" class="secondary">RESET LOCAL DATA</button>'+
           '</div>'+
           '<div class="menu-foot">Levels 1-5: terrain height scales x2, x3, x4, x5, x6.</div>'+
-          '<div class="backend-status" id="backend-status">BACKEND: CHECKING...</div>'+
         '</div></div>'+
       '<div class="game-modal" id="modal-debrief"></div>'+
       '<div class="game-modal" id="modal-browser"></div>'+
@@ -63,7 +61,6 @@ var MenuUI = {
         if (typeof removeIntroOffer === 'function') removeIntroOffer();
         if (typeof buildLessonMenu === 'function') buildLessonMenu();
       }
-      else if (a === 'reset') self.resetLocalData();
       else if (a === 'continue') self.saveDebriefThen('menu');
       else if (a === 'watch-current') self.saveDebriefThen('watch');
       else if (a === 'main-menu') self.saveDebriefThen('menu');
@@ -104,7 +101,6 @@ var MenuUI = {
     this.savedDebriefRecord = null;
     this.refreshLevel();
     this.showModal('modal-main');
-    this.refreshBackendStatus();
   },
 
   refreshLevel:function(){
@@ -133,18 +129,8 @@ var MenuUI = {
     this.refreshLevel();
   },
   refreshBackendStatus:function(){
-    var els = [];
-    var a = document.getElementById('backend-status'); if (a) els.push(a);
-    var b = document.getElementById('browser-backend-status'); if (b) els.push(b);
-    if (!els.length) return;
-    function set(txt, cls){ els.forEach(function(el){ el.textContent=txt; el.classList.remove('online','offline'); if(cls) el.classList.add(cls); }); }
-    if (!window.ReplayStore || !ReplayStore.probe){ set('BACKEND: LOCAL ONLY', 'offline'); return; }
-    set('BACKEND: CHECKING...', 'offline');
-    ReplayStore.probe(false).then(function(ok){
-      var st = ReplayStore.status ? ReplayStore.status() : {};
-      if (ok) set('BACKEND: ONLINE — COMMUNITY REPLAYS ENABLED', 'online');
-      else set('BACKEND: OFFLINE — USING LOCAL REPLAYS', 'offline');
-    }).catch(function(){ set('BACKEND: OFFLINE — USING LOCAL REPLAYS', 'offline'); });
+    // Backend/local sync is intentionally silent for players.
+    // The storage layer still probes and uploads pending mission records in the background.
   },
 
 
@@ -168,7 +154,7 @@ var MenuUI = {
           '<div class="pilot-form">'+
             '<label>ALIAS<input id="pilot-alias" maxlength="16" value="'+this.escape(alias)+'" autocomplete="off" spellcheck="false"><span>Forced uppercase. A-Z and 0-9 only. Max 16 characters.</span></label>'+
             '<label>COUNTRY<select id="pilot-country">'+opts+'</select><span>Stored as a 2-letter country code.</span></label>'+
-            '<div class="save-status" id="debrief-status">Mission result saves automatically when you continue.</div>'+
+            '<div class="save-status" id="debrief-status">Mission result saves automatically.</div>'+
             '<button data-action="continue">CONTINUE</button>'+
             '<button data-action="watch-current" class="secondary">WATCH REPLAY</button>'+
             '<button data-action="main-menu" class="secondary">MAIN MENU</button>'+
@@ -213,7 +199,7 @@ var MenuUI = {
     var p = this.savedDebriefRecord ? Promise.resolve(this.savedDebriefRecord) : GameFlow.completeDebrief(info);
     p.then(function(record){
       self.savedDebriefRecord = record;
-      if (status) status.textContent = (record && record.syncStatus === 'synced') ? 'Mission saved online.' : 'Mission saved locally. Backend unavailable.';
+      if (status) status.textContent = 'Mission saved.';
       if (next === 'watch') GameFlow.playReplay(record);
       else GameFlow.returnToMenu();
     }).catch(function(err){
@@ -225,17 +211,16 @@ var MenuUI = {
     this.init();
     this.showModal('modal-browser');
     var modal = document.getElementById('modal-browser');
-    modal.innerHTML = '<div class="game-card browser-card"><div class="browser-head"><div><div class="game-kicker">SCOREBOARD / REPLAYS</div><h2>PAST MISSIONS</h2></div><button data-action="close-browser">CLOSE</button></div><div class="backend-status" id="browser-backend-status">BACKEND: CHECKING...</div><div class="replay-table-wrap"><div class="empty-replay">Loading...</div></div><div class="menu-foot">Online mode loads community replays; local mode shows local saved replays. Full replay data is loaded only when Watch is selected.</div></div>';
+    modal.innerHTML = '<div class="game-card browser-card"><div class="browser-head"><div><div class="game-kicker">SCOREBOARD / REPLAYS</div><h2>PAST MISSIONS</h2></div><button data-action="close-browser">CLOSE</button></div><div class="replay-table-wrap"><div class="empty-replay">Loading...</div></div><div class="menu-foot">Full replay data is loaded only when Watch is selected.</div></div>';
     if (window.GameFlow) { GameFlow.replayBrowserReturnState = GameFlow.state; GameFlow.set(GAME_STATES.REPLAY_BROWSER, { keepPause:true }); }
     var self = this;
-    this.refreshBackendStatus();
-    ReplayStore.list().then(function(list){ self.refreshBackendStatus(); self.renderReplayList(list); }).catch(function(){ self.refreshBackendStatus(); self.renderReplayList([]); });
+    ReplayStore.list().then(function(list){ self.renderReplayList(list); }).catch(function(){ self.renderReplayList([]); });
   },
 
   renderReplayList:function(list){
     var wrap = document.querySelector('#modal-browser .replay-table-wrap');
     if (!wrap) return;
-    if (!list || !list.length){ wrap.innerHTML = '<div class="empty-replay">No mission replays saved yet.</div>'; return; }
+    if (!list || !list.length){ wrap.innerHTML = '<div class="empty-replay">No mission replays available yet.</div>'; return; }
     var h = '<table class="replay-table"><thead><tr><th>Date</th><th>Alias</th><th>Country</th><th>Level</th><th>Outcome</th><th>Score</th><th>Time</th><th>Action</th></tr></thead><tbody>';
     for (var i=0;i<list.length;i++){
       var r = list[i];
@@ -279,18 +264,6 @@ var MenuUI = {
     if (elapsed) elapsed.textContent = this.formatTime(ReplayPlayback.time)+' / '+this.formatTime(ReplayPlayback.duration);
     var b = hud.querySelector('button[data-action="replay-toggle"]');
     if (b) b.textContent = ReplayPlayback.playing ? 'PAUSE' : 'PLAY';
-  },
-
-  resetLocalData:function(){
-    if (!confirm('Reset all local scores, replays, alias/country and selected level?')) return;
-    var self = this;
-    ReplayStore.clear().then(function(){
-      ReplaySettings.remove('alias'); ReplaySettings.remove('country');
-      try { localStorage.removeItem('f16_selected_difficulty'); localStorage.removeItem('f16_intro_seen'); } catch(e) {}
-      GameFlow.setLevel(1);
-      self.refreshLevel();
-      if (typeof banner === 'function') banner('LOCAL DATA RESET', 1.3);
-    });
   },
 
   handleEscape:function(){

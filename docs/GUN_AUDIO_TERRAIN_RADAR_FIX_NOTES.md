@@ -21,7 +21,7 @@ This patch addresses feedback from the Level 5/radar training build.
 
 ## Radar horizon / masking
 
-- SAM radar-horizon masking now treats anything below 1500 m AGL as masked outside close-range reacquisition.
-- Between 1500 m and 2200 m AGL, SAM detection ramps back in gradually.
-- Level 5 FCR terrain masking now also uses the 1500 m AGL low-altitude threshold.
-- Low-Level Flight School lesson text and completion gates were updated from 300-400 m to below 1500 m AGL.
+- SAM radar-horizon masking now treats anything below 700 m AGL as masked outside close-range reacquisition.
+- Between 700 m and 1100 m AGL, SAM detection ramps back in gradually.
+- Level 5 FCR terrain masking now also uses the 700 m AGL low-altitude threshold.
+- Low-Level Flight School lesson text and completion gates were updated from 300-400 m to below 700 m AGL.

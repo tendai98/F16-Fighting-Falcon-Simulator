@@ -292,28 +292,44 @@ var HybridReplayStore = {
   _syncing:false,
   probe:function(force){
     var self=this;
-    return ApiReplayStore.probe(force).then(function(ok){ if(ok) self.syncPending(); return ok; });
+    return ApiReplayStore.probe(force).then(function(ok){ if(ok) return self.syncPending().then(function(){ return ok; }); return ok; });
   },
   status:function(){ return ApiReplayStore.status(); },
 
   save:function(rec){
     var self=this;
-    return ApiReplayStore.probe(false).then(function(ok){
+    if(!rec) return Promise.reject(new Error('No replay record'));
+    var originalId = rec.id;
+    // Always attempt the backend on mission completion. If it is unavailable,
+    // save locally and let the silent background sync remove the local copy
+    // once upload succeeds.
+    return ApiReplayStore.probe(true).then(function(ok){
       if(!ok) throw new Error(ApiReplayStore._lastError || 'backend unavailable');
       return ApiReplayStore.save(rec).then(function(saved){
-        return LocalReplayStore.save(saved).catch(function(){ return saved; });
+        var ids=[];
+        if(originalId) ids.push(originalId);
+        if(saved && saved.id && ids.indexOf(saved.id)<0) ids.push(saved.id);
+        var chain=Promise.resolve();
+        ids.forEach(function(id){ chain=chain.then(function(){ return LocalReplayStore.delete(id).catch(function(){ return true; }); }); });
+        return chain.then(function(){ return saved; });
       });
     }).catch(function(){
       rec = rec || {}; rec.syncStatus = rec.syncStatus || 'local_pending';
-      return LocalReplayStore.save(rec);
+      return LocalReplayStore.save(rec).then(function(savedLocal){
+        try{ setTimeout(function(){ self.probe(true); }, 15000); }catch(e){}
+        return savedLocal;
+      });
     });
   },
 
   list:function(){
+    var self=this;
     return ApiReplayStore.probe(false).then(function(ok){
       if(!ok) throw new Error(ApiReplayStore._lastError || 'backend unavailable');
-      return Promise.all([ApiReplayStore.list(), LocalReplayStore.list().catch(function(){return[];})]).then(function(pair){
-        return _rsMergeList(pair[0], pair[1]);
+      return self.syncPending().then(function(){
+        return Promise.all([ApiReplayStore.list(), LocalReplayStore.list().catch(function(){return[];})]).then(function(pair){
+          return _rsMergeList(pair[0], pair[1]);
+        });
       });
     }).catch(function(){ return LocalReplayStore.list(); });
   },
@@ -321,10 +337,7 @@ var HybridReplayStore = {
   get:function(id){
     return ApiReplayStore.probe(false).then(function(ok){
       if(!ok) throw new Error(ApiReplayStore._lastError || 'backend unavailable');
-      return ApiReplayStore.get(id).then(function(rec){
-        if(rec) return LocalReplayStore.save(rec).catch(function(){ return rec; });
-        return rec;
-      });
+      return ApiReplayStore.get(id);
     }).catch(function(){ return LocalReplayStore.get(id); });
   },
 
@@ -345,10 +358,12 @@ var HybridReplayStore = {
             if(!rec) return null;
             var oldId = rec.id;
             return ApiReplayStore.save(rec).then(function(saved){
-              return LocalReplayStore.save(saved).then(function(){
-                if(oldId && saved && saved.id && oldId !== saved.id) return LocalReplayStore.delete(oldId).catch(function(){return saved;}).then(function(){return saved;});
-                return saved;
-              });
+              var ids=[];
+              if(oldId) ids.push(oldId);
+              if(saved && saved.id && ids.indexOf(saved.id)<0) ids.push(saved.id);
+              var del=Promise.resolve();
+              ids.forEach(function(id){ del=del.then(function(){ return LocalReplayStore.delete(id).catch(function(){ return true; }); }); });
+              return del.then(function(){ return saved; });
             }).catch(function(){ return null; });
           });
         });
@@ -363,4 +378,7 @@ window.LocalReplayStore=LocalReplayStore;
 window.ApiReplayStore=ApiReplayStore;
 window.HybridReplayStore=HybridReplayStore;
 window.ReplayStore=HybridReplayStore;
-try{ setTimeout(function(){ if(window.ReplayStore && ReplayStore.probe) ReplayStore.probe(true); }, 80); }catch(e){}
+try{
+  setTimeout(function(){ if(window.ReplayStore && ReplayStore.probe) ReplayStore.probe(true); }, 80);
+  setInterval(function(){ if(window.ReplayStore && ReplayStore.probe) ReplayStore.probe(true); }, 60000);
+}catch(e){}

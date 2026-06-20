@@ -63,7 +63,7 @@ class R3 {
     const maxD = ownAgl < 1500 ? 14000 : ownAgl < 2500 ? 22000 : 38000;
     if (d > maxD) return false;
     if (typeof terrainLineClear !== 'function') return true;
-    return terrainLineClear(this.cam.x,this.cam.y,this.cam.z,top.x,top.y,top.z,40) || d < 2400;
+    return terrainLineClear(this.cam.x,this.cam.y,this.cam.z,top.x,top.y,top.z,40);
   }
   visibleGroundSeg(A,B,height=70){
     if (typeof terrainLineClear !== 'function') return true;
