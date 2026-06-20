@@ -37,6 +37,8 @@ var ReplayUtils={
     (world.threats||[]).forEach(function(o){ _id(o,'threat'); if(!o.mobile && !o.structure) ReplayUtils._visual(o,['sam','radar']); });
     (world.bombs||[]).forEach(function(o){ _id(o,'bomb'); });
     (world.sams||[]).forEach(function(o){ _id(o,'missile'); });
+    (world.bullets||[]).forEach(function(o){ _id(o,'bullet'); });
+    (world.decoys||[]).forEach(function(o){ _id(o,'decoy'); });
     (world.effects||[]).forEach(function(o){ _id(o,'effect'); });
   },
 
@@ -102,12 +104,12 @@ var ReplayUtils={
         psi:_rr(ac.psi,4), theta:_rr(ac.theta,4), phi:_rr(ac.phi,4), gamma:_rr(ac.gamma||0,4),
         tas:_rr(ac.tas,1), throttle:_rr(ac.throttle,3), gear:!!ac.gear, onGround:!!ac.onGround,
         g:_rr(ac.g||1,2), aoa:_rr(ac.aoa||0,1), vy:_rr(ac.vy||0,1),
-        integrity:_rr(ac.integrity||0,1), flares:ac.flares|0 },
+        integrity:_rr(ac.integrity||0,1), flares:ac.flares|0, chaff:(ac.chaff||0)|0 },
       sel:{steerpoint:world.steerpoint,masterArm:world.masterArm,masterMode:world.masterMode,selectedStation:world.selectedStation,ecmOn:!!(world.ecm&&world.ecm.on),tgpLaser:!!world.tgpLaser},
       target:(opts.staticState===false?undefined:this.target()),
       bandits:world.bandits.map(this.air), groundMovers:world.groundMovers.map(this.mover),
       hvts:(opts.staticState===false?undefined:world.hvts.map(this.ground)), friendlies:(opts.staticState===false?undefined:world.friendlies.map(this.ground)), structures:(opts.staticState===false?undefined:world.structures.map(this.ground)), threats:(opts.staticState===false?undefined:world.threats.map(this.threat)),
-      bombs:world.bombs.map(this.bomb), sams:world.sams.map(this.missile), effects:world.effects.map(this.effect)
+      bombs:world.bombs.map(this.bomb), sams:world.sams.map(this.missile), bullets:(world.bullets||[]).map(this.bullet), decoys:(world.decoys||[]).map(this.decoy), effects:world.effects.map(this.effect)
     };
     if(opts.cockpit) out.cockpit=this.cockpit();
     return this.compactSnapshot(out, !!opts.keepVisuals);
@@ -136,7 +138,7 @@ var ReplayUtils={
     if(s){
       if(s.target && s.target.buildings) stripList(s.target.buildings);
       stripList(s.groundMovers); stripList(s.hvts); stripList(s.friendlies); stripList(s.structures); stripList(s.threats);
-      (s.bombs||[]).forEach(trimProjectile); (s.sams||[]).forEach(trimProjectile);
+      (s.bombs||[]).forEach(trimProjectile); (s.sams||[]).forEach(trimProjectile); (s.bullets||[]).forEach(trimProjectile);
     }
     return s;
   },
@@ -147,7 +149,9 @@ var ReplayUtils={
   ground:function(o){return{id:_id(o,'ground'),x:_rr(o.x,1),y:_rr(o.y,1),hp:_rr(o.hp||0,1),kind:o.kind||'',name:o.name||o.label||'',destroyed:!!o.destroyed,live:o.live!==false,alive:o.alive!==false,tracking:!!o.tracking,radius:o.radius||0,color:o.color||'',geom:o.geom?_jc(o.geom):null,_cluster:o._cluster?_jc(o._cluster):undefined,primary:!!o.primary,w:o.w,l:o.l,h:o.h,label:o.label||'',structure:!!o.structure,mobile:!!o.mobile,tag:o.tag||'',type:o.type||'',freq:o.freq||''};},
   threat:function(o){var g=ReplayUtils.ground(o);g.name=o.name||g.name;g.hostile=o.hostile!==false;g.bands=o.bands?_jc(o.bands):undefined;g.launchT=o.launchT;return g;},
   bomb:function(b){return{id:_id(b,'bomb'),pos:_v(b.pos),vel:_v(b.vel),trail:(b.trail||[]).slice(-6).map(_v),origin:_v(b.origin),live:b.live!==false,t:_rr(b.t||0,2),guided:!!b.guided,target:_v(b.target),weapon:b.weapon||'MK-82'};},
-  missile:function(m){return{id:_id(m,'missile'),team:m.team||'',kind:m.kind||'',weapon:m.weapon||m.kind||'',pos:_v(m.pos),vel:_v(m.vel),trail:(m.trail||[]).slice(-6).map(_v),spd:_rr(m.spd||0,1),t:_rr(m.t||0,2),life:_rr(m.life||0,1),color:m.color||'',live:m.live!==false,groundPos:_v(m.groundPos),origin:_v(m.origin),name:m.name||'',emitterId:m.emitter?_id(m.emitter,'emitter'):null,targetId:m.tgt?_id(m.tgt,'target'):null};},
+  missile:function(m){return{id:_id(m,'missile'),team:m.team||'',kind:m.kind||'',weapon:m.weapon||m.kind||'',seeker:m.seeker||'',pos:_v(m.pos),vel:_v(m.vel),trail:(m.trail||[]).slice(-6).map(_v),spd:_rr(m.spd||0,1),t:_rr(m.t||0,2),life:_rr(m.life||0,1),energy:_rr(m.energy==null?1:m.energy,3),color:m.color||'',live:m.live!==false,groundPos:_v(m.groundPos),origin:_v(m.origin),name:m.name||'',emitterId:m.emitter?_id(m.emitter,'emitter'):null,targetId:m.tgt?_id(m.tgt,'target'):null};},
+  bullet:function(b){return{id:_id(b,'bullet'),team:b.team||'BLUE',pos:_v(b.pos),prev:_v(b.prev),vel:_v(b.vel),t:_rr(b.t||0,2),life:_rr(b.life||0,2),damage:_rr(b.damage||0,3),trail:(b.trail||[]).slice(-4).map(_v)};},
+  decoy:function(d){return{id:_id(d,'decoy'),team:d.team||'',kind:d.kind||'flare',pos:_v(d.pos),vel:_v(d.vel),t:_rr(d.t||0,2),life:_rr(d.life||0,2)};},
   effect:function(e){return{id:_id(e,'effect'),pos:_v(e.pos),t:_rr(e.t||0,2),dur:_rr(e.dur||0,2),kind:e.kind||'blast'};}
 };
 
@@ -382,12 +386,14 @@ var ReplayPlayback={
     ac.pos={x:this._num(A.x,B.x,u),y:this._num(A.y,B.y,u),z:this._num(A.z,B.z,u)};
     ac.psi=this._ang(A.psi,B.psi,u); ac.theta=this._num(A.theta,B.theta,u); ac.phi=this._num(A.phi,B.phi,u); ac.gamma=this._num(A.gamma,B.gamma,u);
     ac.tas=this._num(A.tas,B.tas,u); ac.throttle=this._num(A.throttle,B.throttle,u); ac.gear=!!D.gear; ac.onGround=!!D.onGround;
-    ac.g=this._num(A.g,B.g,u); ac.aoa=this._num(A.aoa,B.aoa,u); ac.vy=this._num(A.vy,B.vy,u); ac.integrity=this._num(A.integrity,B.integrity,u); ac.flares=Math.round(this._num(A.flares,B.flares,u));
+    ac.g=this._num(A.g,B.g,u); ac.aoa=this._num(A.aoa,B.aoa,u); ac.vy=this._num(A.vy,B.vy,u); ac.integrity=this._num(A.integrity,B.integrity,u); ac.flares=Math.round(this._num(A.flares,B.flares,u)); ac.chaff=Math.round(this._num(A.chaff,B.chaff,u));
 
     world.bandits=this._list(a.bandits,b.bandits,u,'air');
     world.groundMovers=this._list(a.groundMovers,b.groundMovers,u,'mover');
     world.bombs=this._list(a.bombs,b.bombs,u,'proj');
     world.sams=this._list(a.sams,b.sams,u,'proj');
+    world.bullets=this._list(a.bullets,b.bullets,u,'proj');
+    world.decoys=this._list(a.decoys,b.decoys,u,'proj');
     this._applyDiscrete(d);
     world._rwrActive = world.threats.some(function(t){ return !!t.tracking; });
 

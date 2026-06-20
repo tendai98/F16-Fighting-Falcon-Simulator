@@ -44,6 +44,35 @@ class R3 {
     if (c.cz < 1.0) return null;
     return this.proj(c);
   }
+  // Terrain-aware visibility for outside-world overlays.  HSD/MFD pages can
+  // still show tactical symbols, but the out-the-window view should not draw
+  // SAM rings or ground target labels through mountains.
+  visibleLOS(p, margin=45){
+    const c = this.project(p);
+    if (!c || c.z < 1) return null;
+    if (typeof terrainLineClear === 'function' && !terrainLineClear(this.cam.x,this.cam.y,this.cam.z,p.x,p.y,p.z,margin)) return null;
+    return c;
+  }
+  groundOverlayVisible(x,y,height=55){
+    const z = terrainH(x,y);
+    const top = {x,y,z:z+height};
+    const c = this.project(top);
+    if (!c || c.z < 1) return false;
+    const d = Math.hypot(x-this.cam.x, y-this.cam.y);
+    const ownAgl = this.cam.z - terrainH(this.cam.x,this.cam.y);
+    const maxD = ownAgl < 1500 ? 14000 : ownAgl < 2500 ? 22000 : 38000;
+    if (d > maxD) return false;
+    if (typeof terrainLineClear !== 'function') return true;
+    return terrainLineClear(this.cam.x,this.cam.y,this.cam.z,top.x,top.y,top.z,40) || d < 2400;
+  }
+  visibleGroundSeg(A,B,height=70){
+    if (typeof terrainLineClear !== 'function') return true;
+    const At={x:A.x,y:A.y,z:terrainH(A.x,A.y)+height};
+    const Bt={x:B.x,y:B.y,z:terrainH(B.x,B.y)+height};
+    return !!(this.project(At) && this.project(Bt) &&
+      terrainLineClear(this.cam.x,this.cam.y,this.cam.z,At.x,At.y,At.z,45) &&
+      terrainLineClear(this.cam.x,this.cam.y,this.cam.z,Bt.x,Bt.y,Bt.z,45));
+  }
   // clip a camera-space segment to cz>=near, return [A,B] screen or null
   clip(ca, cb){
     const near = 1.0;
@@ -283,22 +312,25 @@ class R3 {
       if (!th.live) continue;
       const z = terrainH(th.x, th.y);
       const N = 40;
-      ctx.strokeStyle = th.tracking ? th.color : 'rgba(255,120,80,0.4)';
-      ctx.lineWidth = th.tracking ? 1.6 : 1.0;
+      const centerVisible = this.groundOverlayVisible(th.x, th.y, 70);
+      // Threat rings are tactical overlays, so never let them shine through
+      // mountains.  Draw only the portions with terrain line-of-sight.
+      ctx.strokeStyle = th.tracking ? th.color : 'rgba(255,120,80,0.32)';
+      ctx.lineWidth = th.tracking ? 1.45 : 0.9;
       if (th.tracking) ctx.setLineDash([6,5]);
       ctx.beginPath();
       let prev=null;
       for (let k=0;k<=N;k++){
         const a = k/N*2*Math.PI;
         const p = { x: th.x + Math.cos(a)*th.radius, y: th.y + Math.sin(a)*th.radius, z: z+1 };
-        if (prev) this.seg(prev, p);
+        if (prev && this.visibleGroundSeg(prev, p, 95)) this.seg(prev, p);
         prev = p;
       }
       ctx.stroke(); ctx.setLineDash([]);
-      // launcher box at centre
-      this.box(th.x, th.y, z, 10, 10, 5, th.color, 1.2);
-      // label
-      this.label3d({x:th.x,y:th.y,z:z+16}, th.name, th.color, 11);
+      if (centerVisible){
+        this.box(th.x, th.y, z, 10, 10, 5, th.color, 1.2);
+        this.label3d({x:th.x,y:th.y,z:z+18}, th.name, th.color, 11);
+      }
     }
   }
 
@@ -330,6 +362,7 @@ class R3 {
   drawTarget(){
     for (const b of world.target.buildings){
       const z = terrainH(b.x,b.y);
+      if (!this.groundOverlayVisible(b.x,b.y,(b.h||20)+35)) continue;
       if (b.destroyed){
         // rubble: low scattered boxes
         this.box(b.x, b.y, z, b.w, b.l, 2, 'rgba(120,120,120,0.5)', 1);
@@ -374,6 +407,10 @@ class R3 {
       const tail = vadd(b.pos, vscale(vnorm(b.vel), -8));
       this.seg(tail, b.pos);
     }
+    for (const bl of (world.bullets||[])){
+      const tail = bl.prev || vadd(bl.pos, vscale(vnorm(bl.vel), -24));
+      this.seg(tail, bl.pos);
+    }
     ctx.stroke();
     // missiles + smoke trails
     for (const s of world.sams){
@@ -389,6 +426,27 @@ class R3 {
       this.seg(vadd(s.pos, vscale(vnorm(s.vel), -22)), s.pos); ctx.stroke();
       const head=this.project(s.pos);
       if (head && head.z>1){ ctx.fillStyle=col; ctx.fillRect(head.x-1.5,head.y-1.5,3,3); }
+    }
+    // visible flare/chaff countermeasures.  These are intentionally drawn larger
+    // than scale-perfect particles so defensive bandit CM is readable from the
+    // cockpit during a merge or chase.
+    for (const d of (world.decoys||[])){
+      const c=this.project(d.pos); if(!c||c.z<1) continue;
+      const age=clamp(1-(d.t||0)/(d.life||1),0,1);
+      const vel=d.vel||{x:0,y:0,z:0};
+      const tail=this.project(vadd(d.pos, vscale(vnorm(vel), d.kind==='flare'?-55:-28)));
+      if (d.kind==='flare'){
+        const r=clamp(6.5*age*(2200/c.z),2.2,18);
+        if(tail&&tail.z>1){ ctx.strokeStyle=`rgba(255,170,70,${0.45*age})`; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(tail.x,tail.y); ctx.lineTo(c.x,c.y); ctx.stroke(); }
+        ctx.fillStyle=`rgba(255,205,75,${0.95*age})`;
+        ctx.beginPath(); ctx.arc(c.x,c.y,r,0,2*Math.PI); ctx.fill();
+        ctx.fillStyle=`rgba(255,95,35,${0.55*age})`; ctx.beginPath(); ctx.arc(c.x,c.y,r*1.8,0,2*Math.PI); ctx.fill();
+      } else {
+        const r=clamp(9*age*(2200/c.z),3.5,28);
+        ctx.strokeStyle=`rgba(215,240,255,${0.70*age})`; ctx.lineWidth=1.3;
+        ctx.beginPath(); ctx.arc(c.x,c.y,r,0,2*Math.PI); ctx.stroke();
+        ctx.strokeStyle=`rgba(215,240,255,${0.25*age})`; ctx.beginPath(); ctx.arc(c.x,c.y,r*1.7,0,2*Math.PI); ctx.stroke();
+      }
     }
     // effects: launch flash (cool/white) vs blast (orange)
     for (const e of world.effects){
@@ -422,6 +480,7 @@ class R3 {
     // high-value stationary assets — red box on the deck + mast + label
     for (const v of world.hvts){
       if (v.destroyed) continue;
+      if (!this.groundOverlayVisible(v.x,v.y,70)) continue;
       const z=terrainH(v.x,v.y), s=10;
       const a={x:v.x-s,y:v.y-s,z},b={x:v.x+s,y:v.y-s,z},c={x:v.x+s,y:v.y+s,z},d={x:v.x-s,y:v.y+s,z};
       ctx.strokeStyle='#ff5b5b'; ctx.lineWidth=1.3; ctx.beginPath();
@@ -432,6 +491,7 @@ class R3 {
     // moving ground targets — orange box on the deck
     for (const m of world.groundMovers){
       if (m.destroyed || m.underground) continue;
+      if (!this.groundOverlayVisible(m.x,m.y,55)) continue;
       const z=terrainH(m.x,m.y), s=6;
       const a={x:m.x-s,y:m.y-s,z},b={x:m.x+s,y:m.y-s,z},c={x:m.x+s,y:m.y+s,z},d={x:m.x-s,y:m.y+s,z};
       ctx.strokeStyle=m.kind==='TEL'?'#ff7a4d':'#ff9a4d'; ctx.lineWidth=1.2; ctx.beginPath();
@@ -440,6 +500,7 @@ class R3 {
     }
     // friendly FARPs / reload strips (cyan) with a centre reload marker
     for (const s of world.airstrips){
+      if (!this.groundOverlayVisible(s.x,s.y,40)) continue;
       const z=terrainH(s.x,s.y), chd=Math.cos(s.hdg), shd=Math.sin(s.hdg), hl=s.len/2, hw=60;
       const c1={x:s.x+shd*hl-chd*hw,y:s.y+chd*hl+shd*hw,z}, c2={x:s.x+shd*hl+chd*hw,y:s.y+chd*hl-shd*hw,z};
       const c3={x:s.x-shd*hl+chd*hw,y:s.y-chd*hl-shd*hw,z}, c4={x:s.x-shd*hl-chd*hw,y:s.y-chd*hl+shd*hw,z};

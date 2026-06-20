@@ -291,6 +291,7 @@ function fcrContacts(m){
   const PADx=34, PADt=34, PADb=40;
   const FW=m.W-2*PADx, FH=m.H-PADt-PADb;
   const add=(ent,x,y,z,dom,sym,name,hostile)=>{
+    if (dom==='AIR' && typeof fcrTerrainCanSee==='function' && !fcrTerrainCanSee({x,y,z})) return;
     const rel = vsub({x,y,z}, ac.pos);
     const brg = wrap2pi(Math.atan2(rel.x,rel.y));
     let az = angWrap(brg - ac.psi)*RAD;
@@ -380,6 +381,7 @@ PAGES.FCR={
     // header
     ctx.fillStyle=C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left';
     ctx.fillText(air?'FCR A-A':'FCR A-G', 6, 14);
+    if (air && (world.difficulty||0)>=4){ ctx.fillStyle=C_YEL; ctx.textAlign='right'; ctx.fillText('TERRAIN MASK', W-6, 14); ctx.textAlign='left'; ctx.fillStyle=C_GREEN; }
     ctx.textAlign='right'; ctx.fillText('A'+m.range, W-6, 14);
     ctx.textAlign='center'; ctx.font='9px "Courier New"';
     ctx.fillText('±'+m.azScan+'°  '+(m.locked?(air?'STT':'GND TRK'):'SCAN'), W/2, PADt-6);
@@ -862,7 +864,7 @@ PAGES.SMS={
     }
     // fuel
     ctx.fillStyle=C_GREEN; ctx.font='9px "Courier New"'; ctx.textAlign='left';
-    ctx.fillText('FLR '+world.ac.flares, 6, H-18);
+    ctx.fillText('FLR '+world.ac.flares+'  CHF '+(world.ac.chaff||0), 6, H-18);
   }
 };
 
@@ -1230,6 +1232,26 @@ PAGES.TGP={
           for (const bm of world.bombs){ drawOrdnance(bm,'bomb'); }
           for (const ms of world.sams){
             if (ms.team==='BLUE' || ms.groundPos || ms.kind==='AGM' || ms.kind==='HARM' || /AGM|HARM|MAVERICK/.test(ms.weapon||'')) drawOrdnance(ms,'missile');
+          }
+          // Defensive flares/chaff are visible in the pod video too.  Flares are
+          // bright hot dots with a short streak; chaff is a cooler expanding bloom.
+          for (const d of (world.decoys||[])){
+            if(!d||!d.pos) continue;
+            const head=proj(d.pos); if(!head || !inFrame(head)) continue;
+            const age=clamp(1-(d.t||0)/(d.life||1),0,1);
+            ctx.save();
+            if(d.kind==='flare'){
+              const vel=d.vel||{x:0,y:0,z:0};
+              const tail=proj(vadd(d.pos, vscale(vnorm(vel), -50)));
+              ctx.strokeStyle=gray(1.0); ctx.fillStyle=gray(1.0); ctx.globalAlpha=0.85*age; ctx.lineWidth=2;
+              if(tail){ ctx.beginPath(); ctx.moveTo(tail.x,tail.y); ctx.lineTo(head.x,head.y); ctx.stroke(); }
+              const r=clamp(f*5/Math.max(1,head.z),2,8); ctx.beginPath(); ctx.arc(head.x,head.y,r,0,Math.PI*2); ctx.fill();
+              ctx.strokeStyle=C_YEL; ctx.globalAlpha=0.9*age; ctx.beginPath(); ctx.arc(head.x,head.y,r+4,0,Math.PI*2); ctx.stroke();
+            } else {
+              ctx.strokeStyle=gray(0.82); ctx.globalAlpha=0.55*age; ctx.lineWidth=1.2;
+              const r=clamp(f*12/Math.max(1,head.z),3,18); ctx.beginPath(); ctx.arc(head.x,head.y,r,0,Math.PI*2); ctx.stroke();
+            }
+            ctx.restore();
           }
         }
 

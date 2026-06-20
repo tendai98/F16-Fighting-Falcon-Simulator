@@ -227,6 +227,7 @@ var GameFlow = {
       else if (code === 'Digit2') this.setLevel(1);
       else if (code === 'Digit3') this.setLevel(2);
       else if (code === 'Digit4') this.setLevel(3);
+      else if (code === 'Digit5') this.setLevel(4);
       return true;
     }
     return false;
@@ -238,7 +239,7 @@ window.startGameMission = startGameMission;
 window.GAME_STATES = GAME_STATES;
 window.GameFlow = GameFlow;
 
-function difficultyName(i){ return (window.DIFFS && DIFFS[i] ? DIFFS[i].name : ['EASY','NORMAL','HARD','ACE'][i] || 'NORMAL'); }
+function difficultyName(i){ return (window.DIFFS && DIFFS[i] ? DIFFS[i].name : ['EASY','NORMAL','HARD','ACE','AIR SUPER'][i] || 'NORMAL'); }
 function sanitizeAlias(v){ return String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,16); }
 function sanitizeCountry(v){ v=String(v||'ZW').toUpperCase().replace(/[^A-Z]/g,'').slice(0,2); return v.length===2?v:'ZW'; }
 window.difficultyName=difficultyName; window.sanitizeAlias=sanitizeAlias; window.sanitizeCountry=sanitizeCountry;

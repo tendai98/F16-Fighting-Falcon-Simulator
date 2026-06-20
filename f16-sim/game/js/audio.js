@@ -39,10 +39,17 @@
     A.warble = new Tone.Synth({ oscillator:{type:'sawtooth'},
       envelope:{attack:0.001,decay:0.03,sustain:0.0,release:0.01} }).connect(A.master);
 
-    // --- noise: gun (bandpassed bursts) ---
-    A.gunFilt = new Tone.Filter(1700,'bandpass').connect(A.master);
-    A.gun = new Tone.NoiseSynth({ noise:{type:'white'},
-      envelope:{attack:0.001,decay:0.045,sustain:0.0,release:0.02} }).connect(A.gunFilt);
+    // --- gun: deep BRRRT with bass thump + controlled buzz/noise ---
+    A.gunBus = new Tone.Gain(0.42).connect(A.master);
+    A.gunFilt = new Tone.Filter(620,'bandpass').connect(A.gunBus);
+    A.gun = new Tone.NoiseSynth({ noise:{type:'brown'},
+      envelope:{attack:0.001,decay:0.075,sustain:0.0,release:0.025} }).connect(A.gunFilt);
+    A.gunBuzzFilt = new Tone.Filter(1050,'bandpass').connect(A.gunBus);
+    A.gunBuzz = new Tone.NoiseSynth({ noise:{type:'white'},
+      envelope:{attack:0.001,decay:0.055,sustain:0.0,release:0.018} }).connect(A.gunBuzzFilt);
+    A.gunBassFilt = new Tone.Filter(135,'lowpass').connect(A.gunBus);
+    A.gunBass = new Tone.Synth({ oscillator:{type:'sawtooth'},
+      envelope:{attack:0.001,decay:0.085,sustain:0.0,release:0.035} }).connect(A.gunBassFilt);
 
     // --- noise: missile whoosh (gain + filter sweep on a steady noise src) ---
     A.whFilt = new Tone.Filter(900,'lowpass').connect(A.master);
@@ -86,7 +93,19 @@
     if (!A.ready || !A.enabled) return;
     const Tone=T(), t=Tone.now();
     try { switch(name){
-      case 'gun':     for (let i=0;i<3;i++) A.gun.triggerAttackRelease(0.03, t + i*0.028); break;
+      case 'gun': {
+        // A compact A-10-like BRRRT: bass pulse plus dirty buzz, rate-limited so
+        // hold-to-fire sounds like one continuous cannon instead of harsh clicks.
+        if (A._lastGunT && t - A._lastGunT < 0.045) break;
+        A._lastGunT = t;
+        const seq = (A._gunSeq = (A._gunSeq||0)+1);
+        const f0 = 64 + (seq%3)*7;
+        A.gunBass.triggerAttackRelease(f0, 0.075, t);
+        A.gun.triggerAttackRelease(0.075, t);
+        A.gunBuzz.triggerAttackRelease(0.052, t+0.006);
+        if (seq%2===0) A.gunBass.triggerAttackRelease(f0*0.5, 0.055, t+0.032);
+        break;
+      }
       case 'missile': missileWhoosh(); A.toneB.triggerAttackRelease(1200,0.09,t); break;
       case 'bomb':    A.beeper.triggerAttackRelease(200,0.10,t); break;
       case 'beep':    A.beeper.triggerAttackRelease(950,0.045,t); break;

@@ -1,0 +1,24 @@
+{
+  "name": "f16-strike-sim-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Secure replay API for F-16 Strike Sim using Node.js and Firestore.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "check": "node --check index.js && node --check src/app.js && node --check src/config.js && node --check src/firebase.js && node --check src/routes/replays.js && node --check src/services/replayStore.js && node --check src/services/validation.js && node --check src/services/scoring.js && node --check src/services/replayCodec.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "firebase-admin": "^14.0.0",
+    "helmet": "^8.2.0",
+    "uuid": "^14.0.1"
+  }
+}

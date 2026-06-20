@@ -4,7 +4,7 @@
 (function(){
   'use strict';
 
-  const LEVEL_MULT = [1.00, 1.20, 1.45, 1.75];
+  const LEVEL_MULT = [2.00, 3.00, 4.00, 5.00, 6.00];
   function rt(v){ return Math.round((Number(v)||0)*100)/100; }
   function wpNow(){ return (typeof curWP === 'function') ? curWP() : null; }
 

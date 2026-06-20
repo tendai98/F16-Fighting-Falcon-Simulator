@@ -160,3 +160,39 @@ Updated after menu and training feedback:
 - ECM lesson pointers now highlight the actual ECM spectrum peaks instead of the whole MFD screen.
 - The datalink tuning lesson now points at the DED TUNE OSB instead of the entire DED display.
 - Lesson startup now preserves lesson-specific MFD/page setup, such as opening the ECM page on the left MFD for EW Strike.
+
+## JS backend + Firestore community replay integration
+
+This build adds an optional Node.js backend in `server/` and links the browser replay store to it through a clean REST API.
+
+Client changes:
+
+- `ReplayStore` is now a hybrid store.
+- It probes `GET /api/health` to detect whether the backend is available.
+- If online, save/list/get operations use the API.
+- If offline, the game falls back to local IndexedDB exactly as before.
+- Local pending replays are retried when the backend becomes available.
+- The main menu and replay browser show backend status: online community replay mode or local-only mode.
+- Debrief save text now distinguishes online save from local fallback.
+
+Backend added:
+
+- `server/` Node.js / Express application.
+- Firebase Admin SDK is configured only through environment variables.
+- No Firebase credentials are included in the client.
+- Endpoints:
+  - `GET /api/health`
+  - `POST /api/replays`
+  - `GET /api/replays`
+  - `GET /api/replays/:id`
+- Backend validates and sanitizes replay submissions before storing them.
+- Backend recomputes the verified score instead of trusting the client score.
+- Replays are compressed with gzip, signed, and stored in Firestore as chunks.
+- Scoreboard metadata is stored separately from full replay blobs for fast list loading.
+
+Firestore layout:
+
+- `replaySummaries/{replayId}` for compact scoreboard records.
+- `replayBlobs/{replayId}` for compressed replay metadata.
+- `replayBlobs/{replayId}/chunks/{chunkId}` for base64 gzip replay chunks.
+

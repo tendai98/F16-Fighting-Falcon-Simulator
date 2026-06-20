@@ -43,9 +43,22 @@ function vnoise(x, y){
   const c = hash2(x0,   y0+1), d = hash2(x0+1, y0+1);
   return lerp(lerp(a,b,u), lerp(c,d,u), v);
 }
-/* max ridge height (m) — dramatic peaks. */
-const TERRAIN_VSCALE = 1;                 // vertical grandeur multiplier
-const TERRAIN_PEAK = 1850 * TERRAIN_VSCALE;   // peak terrain elevation (m)
+/* max ridge height (m) — dramatic peaks.  Terrain height scales by mission
+   level: L1 x2, L2 x3, L3 x4, L4 x5, L5 x6.  Keep TERRAIN_PEAK as a global
+   because the renderer/MFDs use it for vertical shading. */
+const TERRAIN_BASE_PEAK = 1850;
+const TERRAIN_LEVEL_MULTS = [2,3,4,5,6];
+let TERRAIN_LEVEL_MULT = 3;
+let TERRAIN_PEAK = TERRAIN_BASE_PEAK * TERRAIN_LEVEL_MULT;
+function updateTerrainScaleForDifficulty(){
+  const idx = (typeof world !== 'undefined' && world && Number.isFinite(world.difficulty)) ? world.difficulty : 1;
+  const mult = TERRAIN_LEVEL_MULTS[clamp(idx,0,TERRAIN_LEVEL_MULTS.length-1)] || 3;
+  if (mult !== TERRAIN_LEVEL_MULT){
+    TERRAIN_LEVEL_MULT = mult;
+    TERRAIN_PEAK = TERRAIN_BASE_PEAK * TERRAIN_LEVEL_MULT;
+    if (typeof world !== 'undefined' && world) world.terrainGen = (world.terrainGen||0) + 1;
+  }
+}
 /* per-run randomisation of the noise field (set by reseedTerrain) */
 let TERRAIN_OFF = { x:0, y:0, s:1 };
 /* pads kept flat so these sites stay playable — {x,y,r outer, core inner-flat} */
@@ -102,6 +115,7 @@ const world = {
     vy: 0,                 // vertical speed m/s
     integrity: 100,
     flares: 30,
+    chaff: 20,
   },
 
   // ---- runway / airbase ----
@@ -143,12 +157,14 @@ const world = {
   structures: [],     // underground facilities — SAR-findable; armed at HARD/ACE
   airstrips: [],      // friendly FARPs — land & stop near the pad to rearm
   _reloadCD: 0,       // rearm cooldown so one pass reloads once
-  difficulty: 1,      // index into DIFFS (set 0..3)
+  difficulty: 1,      // index into DIFFS (set 0..4)
   quality: 1,         // index into QUALITY_LEVELS (0=LOW,1=MED,2=HIGH)
 
   // ---- in-flight weapons (bombs / missiles) ----
   bombs: [],
-  sams:  [],     // SAM missiles in flight
+  sams:  [],     // missiles in flight (SAM, AAM, AGM, HARM)
+  bullets: [],  // short-lived gun rounds/tracers
+  decoys: [],   // flare/chaff countermeasure objects
   effects: [],   // explosions / smoke
 
   // ---- stores ----
@@ -285,7 +301,7 @@ function spawnBandits(n=3, hva=false){
     world.bandits.push({
       x: bx, y: by, alt: Math.max(rrange(5500,9000), terrainH(bx,by)+900),
       psi: rrange(0,2*Math.PI), spd: rrange(180,260), hp:1,
-      kind: Math.random()<0.7?'HOSTILE':'UNKNOWN',
+      kind: (world.difficulty||0)>=4 ? 'HOSTILE' : (Math.random()<0.7?'HOSTILE':'UNKNOWN'),
     });
   }
   if (hva){
@@ -476,22 +492,34 @@ function spawnFriendlies(n){
 
 /* difficulty presets — scale how many of each entity spawn */
 const DIFFS = [
-  { name:'EASY',   bandits:1, movers:2, hvts:1, friendlies:2, hva:false, structures:2 },
-  { name:'NORMAL', bandits:3, movers:3, hvts:2, friendlies:2, hva:false, structures:2 },
-  { name:'HARD',   bandits:5, movers:4, hvts:3, friendlies:1, hva:true,  structures:3 },
-  { name:'ACE',    bandits:6, movers:5, hvts:3, friendlies:0, hva:true,  structures:4 },
+  { name:'EASY',       bandits:1, movers:2, hvts:1, friendlies:2, hva:false, structures:2, airOnly:false },
+  { name:'NORMAL',     bandits:3, movers:3, hvts:2, friendlies:2, hva:false, structures:2, airOnly:false },
+  { name:'HARD',       bandits:5, movers:4, hvts:3, friendlies:1, hva:true,  structures:3, airOnly:false },
+  { name:'ACE',        bandits:6, movers:5, hvts:3, friendlies:0, hva:true,  structures:4, airOnly:false },
+  { name:'AIR SUPER',  bandits:8, movers:0, hvts:0, friendlies:0, hva:false, structures:0, airOnly:true  },
 ];
 function applyDifficulty(){
+  updateTerrainScaleForDifficulty();
   const d = DIFFS[world.difficulty] || DIFFS[1];
   // drop any previous mobile/structure emitters so re-applying never duplicates them
   world.threats = world.threats.filter(t=>!t.mobile && !t.structure);
   world.ecm = { on:false, jam:[], cursor:50 };               // clear any jamming from a prior mission
-  world._aggr = [0.55,0.8,1.0,1.3][world.difficulty] || 0.8;   // fire-rate scale by level
-  spawnStructures(d.structures, true);                  // present & armed at every level (aggression scales)
+  world._aggr = [0.55,0.8,1.0,1.3,1.55][world.difficulty] || 0.8;   // fire-rate scale by level
+  if (d.airOnly){
+    world.groundMovers=[]; world.hvts=[]; world.structures=[];
+    world.threats = []; // Level 5 is aircraft-only: no SAM/ground objective layer.
+  } else {
+    spawnStructures(d.structures, true);                  // present & armed at every level (aggression scales)
+    spawnGroundMovers(d.movers);
+    spawnHVTs(d.hvts);
+    spawnFriendlies(d.friendlies);
+  }
   spawnBandits(d.bandits, d.hva);
-  spawnGroundMovers(d.movers);
-  spawnHVTs(d.hvts);
-  spawnFriendlies(d.friendlies);
+  if (d.airOnly){
+    // Level 5 is an air-superiority mission: no ground target is required.
+    world.target.destroyed = false;
+    world.steerpoint = Math.min(world.steerpoint||2, world.waypoints.length);
+  }
 }
 
 /* crawl the ground movers along the deck with a little wander */
@@ -708,9 +736,9 @@ const input = {
 const PITCH_SIGN = 1;
 /* Control smoothing time constant (seconds). Higher = softer / more delayed
    stick response (less twitchy). Lower = sharper. */
-const CTRL_TAU = 0.34;
+const CTRL_TAU = 0.18;
 /* How hard a given bank angle turns the jet (arcade gain over true rate). */
-const TURN_GAIN = 2.3;
+const TURN_GAIN = 2.6;
 /* smoothed stick state that lags toward `input` so controls aren't instant */
 const ctrl = { pitch:0, roll:0, yaw:0 };
 
@@ -720,7 +748,7 @@ const FM = {
   idleThrust: 1.5,
   dragK: 0.00032,    // (legacy, unused by aero model)
   vMax: 360,         // hard speed ceiling m/s
-  rollRate: 2.4,     // rad/s
+  rollRate: 3.85,    // rad/s — sharper dogfight roll authority
   pitchRate: 0.95,   // rad/s (legacy)
   yawRate: 0.5,
 };
@@ -731,10 +759,10 @@ const FM = {
    Fast  -> lots of g available -> tight, hard turns.
    Pulling g costs energy (induced drag), so sustained hard turns bleed speed. */
 const AERO = {
-  N_K:    2.78e-4,   // load-factor availability per V^2  (n=1 at ~60 m/s)
-  NMAX:   9.0,       // structural g limit
+  N_K:    3.05e-4,   // load-factor availability per V^2  (slightly stronger dogfight lift)
+  NMAX:   11.4,      // structural g limit — more agile dogfight pull
   CD0K:   2.16e-4,   // parasite drag accel = CD0K * V^2
-  IND:    28800,     // induced drag accel = IND * n^2 / V^2
+  IND:    26200,     // induced drag accel = IND * n^2 / V^2
   STALL:  18*DEG,    // AoA at CLmax (display + buffet reference)
   ROT:    11*DEG,    // nose-up rotation AoA on the runway
 };
@@ -762,7 +790,7 @@ function updateFlight(ac, dt){
   if (ac.onGround){
     ac.phi = lerp(ac.phi, 0, 1-Math.pow(0.001,dt));      // wings level on ground
   } else {
-    ac.phi = clamp(ac.phi + ctrl.roll * FM.rollRate * dt, -85*DEG, 85*DEG);
+    ac.phi = clamp(ac.phi + ctrl.roll * FM.rollRate * dt, -125*DEG, 125*DEG);
     if (Math.abs(ctrl.roll) < 0.03) ac.phi = lerp(ac.phi, 0, 1-Math.pow(0.9,dt)); // mostly holds bank
   }
 
@@ -866,6 +894,55 @@ function updateFlight(ac, dt){
   /* ----- horizontal position ----- */
   ac.pos.x += Vc.x * dt;
   ac.pos.y += Vc.y * dt;
+}
+
+
+/* Radar horizon / terrain masking helpers.
+   The sim map is compressed, so this is a gameplay radar model rather than a
+   geodesy model: low aircraft can terrain-mask a SAM or FCR until they get close
+   enough for the radar to reacquire. */
+function terrainLineClear(ax,ay,az,bx,by,bz, margin){
+  margin = margin===undefined ? 70 : margin;
+  const dx=bx-ax, dy=by-ay, dz=bz-az;
+  const dist=Math.hypot(dx,dy);
+  const steps=clamp(Math.ceil(dist/1400), 5, 24);
+  for(let i=1;i<steps;i++){
+    const u=i/steps;
+    const x=ax+dx*u, y=ay+dy*u, z=az+dz*u;
+    if (terrainH(x,y)+margin > z) return false;
+  }
+  return true;
+}
+function samRadarCanSee(th, pos){
+  if (!th || !pos) return false;
+  const d=Math.hypot(pos.x-th.x, pos.y-th.y);
+  const groundA=terrainH(pos.x,pos.y), agl=pos.z-groundA;
+  const srcZ=terrainH(th.x,th.y)+38;
+  const reacq=Math.min(4600, Math.max(2500, (th.radius||7000)*0.38));
+  if (d <= reacq) return terrainLineClear(th.x,th.y,srcZ,pos.x,pos.y,pos.z,35) || d<2500;
+  // Updated gameplay radar horizon: anything below 1500 m AGL can remain
+  // masked outside close-range reacquisition.  Between 1500 and 2200 m, the
+  // radar gradually gains detection range.
+  if (agl < 1500) return false;
+  if (agl < 2200){
+    const extra=(agl-1500)/700 * Math.max(2200,(th.radius||7000)*0.42);
+    if (d > reacq + extra) return false;
+  }
+  return terrainLineClear(th.x,th.y,srcZ,pos.x,pos.y,pos.z,55);
+}
+function fcrTerrainCanSee(pos){
+  if (!pos || !world || !world.ac) return false;
+  const ac=world.ac;
+  const d=Math.hypot(pos.x-ac.pos.x,pos.y-ac.pos.y);
+  const tgtAgl=pos.z-terrainH(pos.x,pos.y), ownAgl=ac.pos.z-terrainH(ac.pos.x,ac.pos.y);
+  if (d < 4500) return true;
+  // In the air-superiority level, mountains/low-level flight can hide aircraft
+  // from FCR until geometry opens up.
+  if ((world.difficulty||0)>=4){
+    if ((tgtAgl < 1500 || ownAgl < 1500) && d > 7*NM) return false;
+    if (!terrainLineClear(ac.pos.x,ac.pos.y,ac.pos.z,pos.x,pos.y,pos.z,90)) return false;
+  }
+  return true;
 }
 
 function damage(ac, amt, why){

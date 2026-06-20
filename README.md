@@ -3,11 +3,11 @@
 A browser-based F-16C cockpit + strike-mission demo. Full-screen solid-shaded
 out-the-window view, procedural terrain, a full flight HUD, live instruments
 (HSD / FCR with RWS & SAR, SMS, TGP, and a DED page), and a playable air-to-ground
-mission. No build step, no dependencies — plain HTML, CSS, and JavaScript.
+mission. The client has no build step and no frontend dependencies — plain HTML, CSS, and JavaScript. The optional community replay backend is a separate Node.js service in `server/`.
 
 ## Run it
 
-Open `index.html` in any modern browser. That's it.
+Open `index.html` in any modern browser for local/offline play. To use shared community replays, run the Node backend in `server/` or set `window.F16_API_BASE_URL` to your deployed API.
 
 > If the neon F-16 silhouette on the SMS page doesn't appear under a strict
 > `file://` security policy, serve the folder over HTTP instead:
@@ -40,23 +40,29 @@ inert; only the relevant ones light up. The top row always switches page:
 ├── js/
 │   ├── config.js             runtime constants (silhouette asset path)
 │   ├── core.js               math, value-noise terrain, world state, flight model
+│   ├── game_state.js         menu/debrief/replay game state flow
+│   ├── storage.js            IndexedDB/local storage + optional backend API replay store
+│   ├── replay.js             replay recorder and interpolated playback
+│   ├── scoring.js            mission score tracking
 │   ├── render3d.js           R3 — software solid-shaded projection of the world
 │   ├── hud_weapons.js        combat HUD overlay, CCIP, bombs/guns/AAM, threat AI
 │   ├── flighthud.js          flight HUD (pitch ladder, FPM, tapes) — see credits
 │   ├── mfd.js                MFD class + FCR(RWS/SAR/HAD) / HSD / SMS / TGP / DED pages
+│   ├── menu_ui.js            main menu, debrief, scoreboard/replay UI
 │   └── main.js               instances, keyboard input, game loop, mission flow
+├── server/                   optional Node.js + Firestore replay API
 ├── assets/
 │   └── f16_silhouette.png    neon top-down F-16 used on the SMS page
 └── LICENSE-simple-hud.txt    MIT license for the flight HUD (see credits)
 ```
 
 Script load order (set in `index.html`) is significant:
-`config → core → render3d → hud_weapons → flighthud → mfd → main`.
+`tone → audio → config → core → game_state → storage → replay → scoring → render3d → hud_weapons → flighthud → mfd → menu_ui → main`.
 
 ## Controls
 
-Keyboard flies the jet; mouse operates the MFDs. Press **H** in-sim for
-this list as a popup.
+Keyboard flies the jet; mouse operates the MFDs. Press **Esc** in-sim for
+this list as a popup. Press **H** for Scoreboard / Replays.
 
 | Key | Action |
 |-----|--------|
@@ -73,10 +79,11 @@ this list as a popup.
 | `L` | launch AAM (homes the nearest boresight bandit) |
 | `C` | dispense flares |
 | `N` | next steerpoint |
-| `H` | show / hide the controls popup |
+| `Esc` | show / hide the controls popup |
+| `H` | open Scoreboard / Replays |
 | `P` | pause |
 | `R` | restart mission (after win/loss) |
-| `1`/`2`/`3`/`4` | difficulty: EASY / NORMAL / HARD / ACE (resets the mission) |
+| `1`/`2`/`3`/`4`/`5` | difficulty: EASY / NORMAL / HARD / ACE / AIR SUPER (resets the mission) |
 | `F` | toggle the FPS / frame-time meter |
 | `−` / `=` | graphics quality down / up (LOW / MED / HIGH) |
 | `U` | sound on / off |
@@ -121,7 +128,7 @@ You carry, in addition to the gun and the centreline TGP pod:
 
 Cycle the selected store with `X`, or click stations directly on the **SMS**
 page — the left OSBs (L1–L4) select stations 1–4 (9X, 120, AGM, AGM) and the
-right OSBs (R1–R4) select stations 5–8 (82, 82, HARM, TGP); the selected button
+right OSBs select weapon stations 5–7 (82, 82, HARM). The TGP pod is displayed as a carried sensor pod but is not selectable as a weapon; the selected button
 highlights its label and hardpoint on the silhouette (and the OSB button itself
 lights up the moment you pick it), so you can see exactly what's armed. The
 faint connector lines that used to point from each label to its hardpoint have
@@ -536,3 +543,34 @@ On performance: the renderer is still Canvas2D. Moving the environment to
 denser at high frame rates), but it's a focused rewrite that needs to be
 iterated against a real browser/GPU — see the build notes for the proposed
 architecture. The Canvas2D path above is the interim optimization.
+
+
+## Optional community replay backend
+
+The client now uses a hybrid replay store:
+
+- if `/api/health` responds, it saves and loads community replays through the backend;
+- if the backend is unavailable, it falls back to local IndexedDB;
+- local pending replays are retried when the backend comes back online.
+
+Run the backend:
+
+```bash
+cd server
+cp .env.example .env
+npm install
+npm start
+```
+
+For same-origin deployment set `SERVE_CLIENT=true` and open the backend URL. For split frontend/API hosting, define this before `js/storage.js` loads:
+
+```html
+<script>window.F16_API_BASE_URL = 'https://your-api.example.com';</script>
+```
+
+Firestore writes should only go through the backend. The game client never receives Firebase Admin SDK credentials.
+
+
+## Recent update: Level 5 / radar horizon / gun training
+
+Level 5 `AIR SUPER` is an air-to-air-only mission. Score multipliers are now Level 1 x2, Level 2 x3, Level 3 x4, Level 4 x5, Level 5 x6. SAMs and Level 5 FCR now model low-altitude/terrain masking. Flight School includes A-A gun and low-level radar-horizon attack lessons.

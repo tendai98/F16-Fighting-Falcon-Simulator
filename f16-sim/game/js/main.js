@@ -31,7 +31,7 @@ const CONTROLS = [
     ['V', 'Designate boresight point (optional \u2014 tapping a contact on FCR / SAR / HAD also slews the pod)'],
     ['SPACE', 'Pickle (A-G) / fire gun (A-A, DGFT)'],
     ['L', 'Launch air-to-air missile'],
-    ['C', 'Dispense flares'],
+    ['C', 'Dispense flares/chaff'],
     ['J', 'Toggle EW / ECM jamming pod (also B1 on the ECM page)'],
   ]],
   ['NAV / SYSTEM', [
@@ -41,7 +41,7 @@ const CONTROLS = [
     ['Esc', 'Show / hide this manual'],
     ['P', 'Pause'],
     ['R', 'Restart mission (active flight only)'],
-    ['1 / 2 / 3 / 4', 'Difficulty: EASY / NORMAL / HARD / ACE (resets)'],
+    ['1 / 2 / 3 / 4 / 5', 'Difficulty: EASY / NORMAL / HARD / ACE / AIR SUPER (resets)'],
     ['F', 'Toggle FPS / frame-time meter'],
     ['\u2212 / =', 'Graphics quality down / up (LOW \u2192 MED \u2192 HIGH)'],
     ['U', 'Sound on / off'],
@@ -147,6 +147,7 @@ function clearRuntimeState(opts){
   world._mslAwayUntil=0;
   world._rwrActive=false;
   world._flareT=0;
+  world._chaffT=0;
   world._cautionUntil=0;
   world._stall=false;
   try { _flash=0; } catch(e) {}
@@ -155,7 +156,7 @@ function clearRuntimeState(opts){
   }
   if (opts.resetCockpit) resetCockpitState();
   if (opts.clearProjectiles){
-    world.bombs.length=0; world.sams.length=0; world.effects.length=0;
+    world.bombs.length=0; world.sams.length=0; world.effects.length=0; if(world.bullets) world.bullets.length=0; if(world.decoys) world.decoys.length=0;
   }
   if (opts.clearOutcome){ world.outcome=null; world.outcomeReason=''; }
   if (opts.invalidateMission){ world._missionGen = (world._missionGen || 0) + 1; }
@@ -205,6 +206,7 @@ function onKeyDown(code){
     case 'Digit2':  setDifficulty(1); break;
     case 'Digit3':  setDifficulty(2); break;
     case 'Digit4':  setDifficulty(3); break;
+    case 'Digit5':  setDifficulty(4); break;
     case 'KeyR':    if (window.GameFlow && GameFlow.isActiveMission()){ restartMission(); if (GameFlow.afterMissionRestart) GameFlow.afterMissionRestart(); } break;
   }
 }
@@ -225,6 +227,7 @@ function setDifficulty(i, opts){
   opts = opts || {};
   const newLevel = clamp(i, 0, DIFFS.length-1);
   world.difficulty = newLevel;
+  if (typeof updateTerrainScaleForDifficulty === 'function') updateTerrainScaleForDifficulty();
   if (window.GameFlow) GameFlow.setLevel(newLevel);
   const active = !window.GameFlow || GameFlow.isActiveMission();
   banner('DIFFICULTY: '+DIFFS[world.difficulty].name+(active && !opts.noRestart ? ' - RESETTING' : ''), active ? 2 : 1.2);
@@ -291,10 +294,10 @@ function sampleInput(){
 const HELP_REF = {
   WEAPONS: [
     ['AIR-TO-AIR', [
-      ['GUN M61', '20mm cannon. A-A / DGFT only. Hold SPACE to fire (~510 rds).'],
+      ['GUN M61', '20mm cannon. A-A / DGFT only. Hold SPACE to fire. The LCOS circle tracks the target: green/white = tracking, yellow = in range, red = SHOOT. Hard turns spread the bullet stream; smooth tracking bursts kill fastest.'],
       ['AIM-9X', 'Short-range IR missile. Designate (V) a boresight bandit, launch with L.'],
       ['AIM-120', 'Radar (BVR) missile. Lock a bandit on the FCR / V, launch with L.'],
-      ['FLARES', 'C dispenses IR decoy flares (30) to defeat incoming heat-seekers.'],
+      ['COUNTERMEASURES', 'C dispenses flares and chaff to decoy IR/radar missiles. Enemy fighters also carry limited flares/chaff and may react late or not at all.'],
     ]],
     ['AIR-TO-GROUND', [
       ['Mk-82 \u00d76', '500lb bomb. Laser OFF \u2192 CCIP (fly the pipper onto the target, SPACE). Laser ON \u2192 LGB, guides to the lased spot.'],
@@ -309,7 +312,7 @@ const HELP_REF = {
   ],
   SENSORS: [
     ['RADAR / EO', [
-      ['FCR', 'Fire Control Radar. B1 cycles RWS / SAR-GMT / HAD. L1-L4 set range.'],
+      ['FCR', 'Fire Control Radar. B1 cycles RWS / SAR-GMT / HAD. L1-L4 set range. In AIR SUPER, terrain and low altitude can mask aircraft until line-of-sight opens.'],
       ['RWS', 'Range-While-Search air picture (B-scope). Lock bandits for AIM-120 / 9X.'],
       ['SAR / GMT', 'Ground map ahead of the jet. Tags moving vehicles, TELs and buried sites. Tap a contact to designate it \u2014 the TGP slews onto it automatically.'],
       ['TGP', 'Targeting Pod \u2014 IR/EO camera on the designated point. L1-L4 = 4 zoom stages, R1 WIDE/NARO, R2 AREA/POINT, R3 laser (LGB), R4 WHOT/BHOT. Footer shows SR (slant range) + DEP (look-down angle).'],
@@ -326,7 +329,7 @@ const HELP_REF = {
   MODES: [
     ['MASTER MODE (M)', [
       ['NAV', 'Navigation. No weapon cues \u2014 fly the route.'],
-      ['A-A', 'Air-to-Air. Gun + AIM-9X / 120; FCR in RWS.'],
+      ['A-A', 'Air-to-Air. Gun + AIM-9X / 120; FCR in RWS. Gun reticle: yellow means in range, red means the lead/track solution is good for a firing burst.'],
       ['A-G', 'Air-to-Ground. Bombs / Mavericks / HARM; CCIP or LGB cue on the HUD.'],
       ['DGFT', 'Dogfight. Gun + AIM-9X, boresight auto-acquire.'],
     ]],
@@ -460,19 +463,20 @@ function restartMission(){
   const ac = world.ac;
   ac.pos = v3(0,-1000,0); ac.psi=0; ac.theta=0; ac.phi=0; ac.gamma=0; ac.alpha=0;
   ac.tas=0; ac.throttle=0; ac.gear=true; ac.onGround=true;
-  ac.g=1; ac.aoa=0; ac.vy=0; ac.integrity=100; ac.flares=30;
+  ac.g=1; ac.aoa=0; ac.vy=0; ac.integrity=100; ac.flares=30; ac.chaff=20;
   world.t=0; world.paused=false; world.outcome=null; world.outcomeReason=null; world.message=''; world.messageT=0; world._takeoffOK=false;
   world.steerpoint=1; world.designated=false;
   world.gndLock=null; world.airLock=null; world.harmLock=null; world.tgpLaser=false;
   for (const k in MFDS){ if (MFDS[k]) MFDS[k].laser=false; }
   world.masterArm='SAFE'; world.masterMode='NAV';
-  world.bombs.length=0; world.sams.length=0; world.effects.length=0;
+  world.bombs.length=0; world.sams.length=0; world.effects.length=0; if(world.bullets) world.bullets.length=0; if(world.decoys) world.decoys.length=0;
   world.groundMovers.length=0; world.hvts.length=0; world.friendlies.length=0;
   world.structures.length=0; world.airstrips.length=0; world._reloadCD=0; world.dlEntry='';
   const QTY={1:2,2:2,3:2,4:2,5:3,6:3,7:4,8:1};
   world.stations.forEach(s=>{ s.qty=QTY[s.id]||0; s.sel=(s.id===5); s.reloadT=0; });
   world.selectedStation=5;
   world.threats.forEach(t=>{ t.tracking=false; t.live=true; t.launchT=-99; });
+  if (typeof updateTerrainScaleForDifficulty === 'function') updateTerrainScaleForDifficulty();
   world.target.destroyed=false;
   world.target.buildings.forEach(b=>b.destroyed=false);
   buildMission();
@@ -523,6 +527,7 @@ function loop(now){
       updateFlight(world.ac, dt);
       updateBandits(dt);
       updateGunFire(dt);
+      if (typeof updateBullets === 'function') updateBullets(dt);
       updateGroundMovers(dt);
       checkReload(dt);
       updateFriendlies(dt);
@@ -566,6 +571,7 @@ function loop(now){
         lowAlt:   !ac.onGround && agl < 160 && ac.vy < 0,
         stall:    !ac.onGround && !!world._stall,
         caution:  world._cautionUntil && world.t < world._cautionUntil,
+        gun:      world._gunAudioUntil && world.t < world._gunAudioUntil,
         paused:   (window.ReplayPlayback && ReplayPlayback.active) ? !ReplayPlayback.playing : (world.paused || !!world.outcome),
       });
     }
@@ -809,7 +815,7 @@ function setupDefense(){ tutResetEZ();
   isolateSAM('SA-6', 1.60, 3500);                   // start well OUTSIDE; fly in to draw a shot
   world.masterMode='NAV'; world.masterArm='SAFE';
   world.selectedStation=1; world.stations.forEach(st=>st.sel=(st.id===1));
-  world.ac.flares=30;
+  world.ac.flares=30; world.ac.chaff=20;
   if (MFDS.left) MFDS.left.setPage('HSD');          // HSD on the left MFD -> B5 opens the THR page
 }
 function setupAA(){ tutResetEZ(); clearThreats();
@@ -820,6 +826,24 @@ function setupAA(){ tutResetEZ(); clearThreats();
   placeJetFacing(px,py,14000,0); world.ac.pos.z=terrainH(px,py)+alt;
   world.masterMode='NAV'; world.masterArm='SAFE';
   world.selectedStation=2; world.stations.forEach(st=>st.sel=(st.id===2));
+}
+function setupGun(){ tutResetEZ(); clearThreats();
+  const px=2600, py=15000, alt=4200;
+  world.bandits=[];
+  const b={x:px,y:py,alt,psi:Math.PI*1.02,spd:185,hp:1,kind:'HOSTILE',cmFlares:0,cmChaff:0};
+  world.bandits.push(b); world.airLock=b;
+  placeJetFacing(px,py,3600,0); world.ac.pos.z=terrainH(px,py)+alt-80; world.ac.tas=245;
+  world.masterMode='A-A'; world.masterArm='SAFE';
+  world.selectedStation=1; world.stations.forEach(st=>st.sel=(st.id===1));
+  if (MFDS.center) MFDS.center.setPage('FCR');
+}
+function setupLowLevel(){ tutResetEZ();
+  const s = isolateSAM('SA-6', 1.35, 360);
+  if (s){ s.hopCapable=false; s.trainingFixedFreq=true; s._hopT=999999; s.radius=Math.max(s.radius||8500, 8500); }
+  world.masterMode='NAV'; world.masterArm='SAFE';
+  world.selectedStation=7; world.stations.forEach(st=>st.sel=(st.id===7));
+  world.ac.pos.z=terrainH(world.ac.pos.x,world.ac.pos.y)+360; world.ac.tas=255; world.ac.throttle=0.72; world.ac.gear=false; world._tutFire=true;
+  if (MFDS.left) MFDS.left.setPage('HSD'); if (MFDS.center) { MFDS.center.setPage('FCR'); MFDS.center.fcrMode='HAD'; }
 }
 function setupDatalink(){ tutResetEZ(); clearThreats();
   placeJetFacing(world.target.x, world.target.y, 14000, 4000);
@@ -835,7 +859,7 @@ function setupECMStrike(){ tutResetEZ();
   if (s){ s.hopCapable=false; s.trainingFixedFreq=true; s._hopT=999999; }
   world.masterMode='NAV'; world.masterArm='SAFE';
   world.selectedStation=7; world.stations.forEach(st=>st.sel=(st.id===7));   // HARM ready
-  world.ac.flares=30;
+  world.ac.flares=30; world.ac.chaff=20;
   world._tutFire=true;                              // this SAM WILL shoot if you fail to jam it
   if (MFDS.left) MFDS.left.setPage('ECM');          // spectrum up from the start
 }
@@ -888,6 +912,25 @@ const L_AA = [
   {t:'FIRE', key:'L', point:{hud:'steer'}, b:'Locked and in range \u2014 press L to launch, and keep the nose on him to support the missile.', live:()=>{const b=world.airLock; return b?('RNG '+(distTo(b.x,b.y)/NM).toFixed(1)+' NM'):'';}, done:()=>world.sams.some(s=>s.team==='BLUE'&&s.tgt)||world.bandits.every(b=>b.hp<=0)},
   {t:'SPLASH', point:null, b:'That\u2019s a beyond-visual-range shot: A-A \u2192 AIM-120 \u2192 radar lock \u2192 launch. Up close, L fires the AIM-9 and the gun is on SPACE in DGFT.'},
 ];
+const L_GUN = [
+  {t:'A-A GUNS', point:null, b:'This lesson teaches the gun sight. The big reticle tracks the target. Yellow means in range; red means you have a good lead/track solution. Hold SPACE in short bursts.'},
+  {t:'A-A MODE', key:'M', point:{hud:'mode'}, b:'Set master mode to A-A or DGFT. The cannon is always on SPACE in these modes.', done:()=>world.masterMode==='A-A'||world.masterMode==='DGFT'},
+  {t:'ARM', key:'B', point:{hud:'mode'}, b:'Master Arm to ARM or SIM. Use ARM if you want the kill to count.', done:()=>world.masterArm!=='SAFE'},
+  {t:'LOCK / TRACK', key:'V', point:{hud:'steer'}, b:'The bandit is close ahead. Press V if it is not already locked. Keep it near the reticle; avoid yanking too hard because high-G spreads the rounds.', done:()=>!!world.airLock},
+  {t:'YELLOW = IN RANGE', point:{hud:'steer'}, b:'Close until the reticle turns yellow. Yellow means the target is in the playable gun envelope.', live:()=>{const b=world.airLock; return b?('RNG '+(distTo(b.x,b.y)/NM).toFixed(2)+' NM'):'NO LOCK';}, done:()=>{const sol=(typeof bestGunSolution==='function')&&bestGunSolution(); return !!sol && sol.range < 1.55*NM;}},
+  {t:'RED = SHOOT', key:'SPACE', point:{hud:'steer'}, b:'When the reticle turns red, hold SPACE for a short tracking burst. The bullets inherit your aircraft motion, so smooth pursuit kills faster than spraying in a hard pull.', done:()=>world.bandits.every(b=>b.hp<=0)||world.bandits.some(b=>b._lastGunHitT&&world.t-b._lastGunHitT<1.0)},
+  {t:'GUNS COMPLETE', point:null, b:'Good gun kills come from controlled closure, a steady target track and short bursts when the LCOS is red. Yellow is range. Red is shoot.'},
+];
+const L_LOW = [
+  {t:'LOW-LEVEL SAM ATTACK', point:null, b:'Radar horizon matters. Below 1500 m AGL you can terrain-mask a SAM and penetrate part of its ring. Get too close and it reacquires.'},
+  {t:'STAY LOW', point:{hud:'alt'}, b:'Hold low altitude below 1500 m above ground. Use gentle pitch and terrain awareness; do not climb into the radar line-of-sight.', live:()=>{const agl=world.ac.pos.z-terrainH(world.ac.pos.x,world.ac.pos.y); return 'AGL '+Math.round(agl)+' m';}, done:()=>{const agl=world.ac.pos.z-terrainH(world.ac.pos.x,world.ac.pos.y); return agl>180&&agl<1500;}},
+  {t:'PENETRATE MASKED', point:{hud:'steer'}, b:'Fly toward the SAM while staying low. Notice it does not track while the terrain/radar horizon masks you.', live:()=>{const s=world.threats.find(t=>t.live); return s?((s.tracking?'TRACKING':'MASKED')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>{const s=world.threats.find(t=>t.live); return !!s && distTo(s.x,s.y)<s.radius*0.82 && !s.tracking;}},
+  {t:'REACQUIRE WARNING', point:{hud:'steer'}, b:'As you get closer, the SAM can reacquire even at low altitude. Be ready to jam, shoot, or break.', live:()=>{const s=world.threats.find(t=>t.live); return s?((s.tracking?'TRACKING':'MASKED')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>world.threats.some(t=>t.live&&t.tracking)},
+  {t:'A-G + ARM', key:'M / B', point:{hud:'mode'}, b:'Set master mode A-G and Master Arm ARM or SIM while staying low.', done:()=>world.masterMode==='A-G'&&world.masterArm!=='SAFE'},
+  {t:'LOCK EMITTER', point:{mfd:'center',screen:true,cap:'HAD'}, b:'On the HAD/FCR page, tap the SAM emitter to lock it for HARM. The HARM should already be selected.', done:()=>!!world.harmLock},
+  {t:'MAGNUM LOW', key:'SPACE', point:{hud:'steer'}, b:'Fire the HARM from low level with SPACE, then stay low or break away as needed.', done:()=>world.sams.some(s=>s.kind==='HARM')||world.threats.every(t=>!t.live)},
+  {t:'LOW-LEVEL COMPLETE', point:null, b:'Low-level ingress narrows radar detection, but it is not invisibility. Close range, line-of-sight openings and pop-ups let the SAM reacquire.'},
+];
 const L_SEAD = [
   {t:'SEAD \u2014 KILL A SAM', point:null, b:'Now take the fight to the air defences. A single SA-6 SAM site is ahead. You\u2019ll find its radar, lock it and destroy it with a HARM anti-radiation missile. (It won\u2019t fire during training.)'},
   {t:'A-G + ARM', key:'M / B', point:{hud:'mode'}, b:'Master mode A-G (M), Master Arm ARM or SIM (B).', done:()=>world.masterMode==='A-G'&&world.masterArm!=='SAFE'},
@@ -899,16 +942,16 @@ const L_SEAD = [
   {t:'SEAD COMPLETE', point:null, b:'Find \u2192 HAD \u2192 lock \u2192 HARM. With the SAM down, the corridor opens. You can also kill SAMs with a TGP-lasered bomb \u2014 or just jam them, which the ECM lesson covers.'},
 ];
 const L_DEF = [
-  {t:'DEFENCE \u2014 THREATS & COUNTERMEASURES', point:null, b:'When a SAM shoots at you, the THREAT/EWS page shows who fired and the missile in the air \u2014 then you defeat it with flares and a hard break. A SA-6 is ahead; fly toward it.'},
+  {t:'DEFENCE \u2014 THREATS & COUNTERMEASURES', point:null, b:'When a SAM shoots at you, the THREAT/EWS page shows who fired and the missile in the air \u2014 then you defeat it with flares/chaff and a hard break. A SA-6 is ahead; fly toward it.'},
   {t:'GET LOCKED', point:{hud:'steer'}, b:'Fly toward the SAM until your RWR warbles \u2014 it has radar lock on you. (Listen for the warble and watch the threat warning.)', live:()=>{const s=world.threats.find(t=>t.live&&t.radius); return s?('RNG '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>world.threats.some(t=>t.live&&t.tracking)},
   {t:'OPEN THE THREAT PAGE', point:{mfd:'left',osb:'B5',cap:'HSD \u2014 B5 \u2192 THR'}, b:'Bring up the Threat/EWS page: on the HSD (left MFD) press B5 \u2192 THR. It plots every emitter that can see you, track-up, with lethal rings.', done:()=>Object.values(MFDS).some(m=>m.page==='THR')},
-  {t:'MISSILE \u2014 FLARES!', key:'C', point:{mfd:'left',screen:true,cap:'THR \u2014 inbound missile'}, b:'Launch! The THR page draws the inbound missile and its time-to-impact (TTI). Punch flares with C and break hard away to decoy the seeker.',
+  {t:'MISSILE \u2014 COUNTERMEASURES!', key:'C', point:{mfd:'left',screen:true,cap:'THR \u2014 inbound missile'}, b:'Launch! The THR page draws the inbound missile and its time-to-impact (TTI). Punch countermeasures with C and break hard away to decoy the seeker.',
     enter:()=>{ const s=world.threats.find(t=>t.live&&t.radius); TUT._flareStart=world.ac.flares;
       if (s){ const ac=world.ac, z=terrainH(s.x,s.y), dir=vnorm(vsub(ac.pos,{x:s.x,y:s.y,z:z+4}));
-        world.sams.push({team:'RED',pos:{x:s.x,y:s.y,z:z+4},vel:vscale(dir,180),spd:180,t:0,life:18,color:s.color||'#ff5050',origin:{x:s.x,y:s.y,z:z+4},src:s,name:s.name,trail:[{x:s.x,y:s.y,z:z+4}]});
-        banner('\u2605 MISSILE LAUNCH \u2014 FLARES!',1.8); if(typeof flash==='function') flash(0.4); } },
+        world.sams.push({team:'RED',kind:'SAM',weapon:s.name||'SAM',seeker:'RADAR',pos:{x:s.x,y:s.y,z:z+4},vel:vscale(dir,220),spd:220,t:0,life:18,energy:1,color:s.color||'#ff5050',origin:{x:s.x,y:s.y,z:z+4},src:s,name:s.name,trail:[{x:s.x,y:s.y,z:z+4}]});
+        banner('\u2605 MISSILE LAUNCH \u2014 COUNTERMEASURES!',1.8); if(typeof flash==='function') flash(0.4); } },
     done:()=>world.ac.flares < (TUT._flareStart!=null?TUT._flareStart:30)},
-  {t:'HOLD THE BREAK', point:{hud:'steer'}, b:'Keep the turn in and dispense more flares if it\u2019s still tracking. \u201cSAM DEFEATED\u201d means you spoofed the shot.', done:()=>!world.sams.some(s=>s.team==='RED')},
+  {t:'HOLD THE BREAK', point:{hud:'steer'}, b:'Keep the turn in and dispense more countermeasures if it\u2019s still tracking. \u201cSAM DEFEATED\u201d means you spoofed the shot.', done:()=>!world.sams.some(s=>s.team==='RED')},
   {t:'DEFENCE COMPLETE', point:null, b:'The THR page is your survival picture \u2014 it shows who can shoot and what\u2019s inbound. Flares decoy the missile and the hard turn makes it overshoot. You carry 30; use them in pairs as a missile closes and keep some in reserve. Combine with terrain masking and jamming (ECM lesson) to survive the threat rings.'},
 ];
 const L_DLNK = [
@@ -941,11 +984,13 @@ const LESSONS = [
   {id:'tgp',    tag:'2 \u00b7 TGP',      name:'TGP \u2014 Targeting-Pod Designation',  desc:'Find, lock and bomb a target with the pod.',          setup:setupApproach, steps:L_TGP},
   {id:'sar',    tag:'3 \u00b7 SAR',      name:'SAR \u2014 Radar-Mapped Strike',        desc:'Use ground radar to kill a moving vehicle.',          setup:setupSAR,     steps:L_SAR},
   {id:'sead',   tag:'4 \u00b7 SEAD',     name:'SEAD \u2014 Kill a SAM',                desc:'Find, lock and HARM a live SAM site.',                setup:setupSEAD,    steps:L_SEAD},
-  {id:'def',    tag:'5 \u00b7 DEFENCE',  name:'DEFENCE \u2014 Threat Page & Countermeasures', desc:'Read the THREAT/EWS page, then beat the missile with flares + a hard break.', setup:setupDefense, steps:L_DEF},
-  {id:'aa',     tag:'6 \u00b7 A-A',      name:'AIR-TO-AIR \u2014 Intercept',           desc:'Lock a bandit on radar and take a missile shot.',     setup:setupAA,      steps:L_AA},
-  {id:'dlnk',   tag:'7 \u00b7 DATALINK', name:'DATALINK \u2014 AWACS Picture',         desc:'Tune the datalink and read the shared picture.',      setup:setupDatalink, steps:L_DLNK},
-  {id:'ecm',    tag:'8 \u00b7 ECM',      name:'ECM \u2014 Jamming an SA-3',            desc:'Jam a basic SAM\u2019s radar and learn burn-through.',    setup:setupECM,     steps:L_ECM},
-  {id:'ewstk',  tag:'9 \u00b7 EW STRIKE', name:'EW STRIKE \u2014 Attack Under Jamming',  desc:'Jam a fixed-frequency 2-band SA-6, penetrate under cover, and HARM it from inside the ring.', setup:setupECMStrike, steps:L_ECMSTK},
+  {id:'def',    tag:'5 \u00b7 DEFENCE',  name:'DEFENCE \u2014 Threat Page & Countermeasures', desc:'Read the THREAT/EWS page, then beat the missile with flares/chaff + a hard break.', setup:setupDefense, steps:L_DEF},
+  {id:'aa',     tag:'6 \u00b7 A-A MSL',  name:'AIR-TO-AIR \u2014 Missile Engagement',  desc:'Lock a bandit on radar and take a missile shot.',     setup:setupAA,      steps:L_AA},
+  {id:'aagun',  tag:'7 \u00b7 A-A GUN',  name:'AIR-TO-AIR \u2014 Gun Employment',      desc:'Use the LCOS reticle, range cues and cannon bursts.', setup:setupGun,     steps:L_GUN},
+  {id:'low',    tag:'8 \u00b7 LOW LEVEL',name:'LOW-LEVEL \u2014 Radar Horizon Attack', desc:'Use terrain/radar horizon to penetrate a SAM ring.', setup:setupLowLevel, steps:L_LOW},
+  {id:'dlnk',   tag:'9 \u00b7 DATALINK', name:'DATALINK \u2014 AWACS Picture',         desc:'Tune the datalink and read the shared picture.',      setup:setupDatalink, steps:L_DLNK},
+  {id:'ecm',    tag:'10 \u00b7 ECM',     name:'ECM \u2014 Jamming an SA-3',            desc:'Jam a basic SAM\u2019s radar and learn burn-through.',    setup:setupECM,     steps:L_ECM},
+  {id:'ewstk',  tag:'11 \u00b7 EW STRIKE', name:'EW STRIKE \u2014 Attack Under Jamming', desc:'Jam a fixed-frequency 2-band SA-6, penetrate under cover, and HARM it from inside the ring.', setup:setupECMStrike, steps:L_ECMSTK},
 ];
 let TUT_STEPS = L_BASICS;
 let TUT = { active:false, step:0, okT:0, _paused:false, lessonTag:'', lessonName:'' };

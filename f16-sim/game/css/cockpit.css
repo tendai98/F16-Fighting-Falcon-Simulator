@@ -582,3 +582,18 @@ body[data-game-mode="ACTIVE_MISSION"] #game-ui,body[data-game-mode="FLIGHT_SCHOO
   #game-ui .replay-restart,.replay-restart{top:42px;}
   #game-ui .replay-exit,.replay-exit{top:78px;}
 }
+
+/* Backend status indicator for online community replay storage */
+#game-ui .backend-status,
+.backend-status{
+  margin-top:10px;
+  padding:8px 10px;
+  border:1px solid rgba(91,255,155,.24);
+  border-radius:9px;
+  background:rgba(0,12,6,.55);
+  color:#8decae;
+  font:bold 11px "Courier New",monospace;
+  letter-spacing:.08em;
+}
+#game-ui .backend-status.online,.backend-status.online{color:#ffd24d;border-color:rgba(255,210,77,.42)}
+#game-ui .backend-status.offline,.backend-status.offline{color:#8decae;border-color:rgba(141,236,174,.24)}
