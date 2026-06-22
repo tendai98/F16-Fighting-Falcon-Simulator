@@ -61,9 +61,59 @@ function updateTerrainScaleForDifficulty(){
 }
 /* per-run randomisation of the noise field (set by reseedTerrain) */
 let TERRAIN_OFF = { x:0, y:0, s:1 };
+/* structured terrain feature seed.  The renderer uses this so
+   low-level routes are repeatable inside one mission/replay instead of pure
+   random hill noise. */
+let TERRAIN_FEATURES = { riverPhase:0, gorgePhase:0, ridgePhase:0, lakeX:-7000, lakeY:26000, lakeR:1800 };
 /* pads kept flat so these sites stay playable — {x,y,r outer, core inner-flat} */
 let FLAT_SITES = [ {x:0,y:0,r:11000,core:2800}, {x:-3000,y:22000,r:6500,core:1500} ];
-/* ground elevation (m) at world (X east, Y north) — tall rolling mountains, endless */
+
+function _riverCenterX(Y){
+  const f=TERRAIN_FEATURES||{};
+  // winding river/valley corridor: broad enough to navigate, but with real bends
+  return 4700*Math.sin((Y+(f.riverPhase||0))/9300)
+       + 1700*Math.sin((Y-(f.riverPhase||0)*0.37)/3600)
+       + 520*Math.sin((Y+(f.riverPhase||0)*0.21)/1450);
+}
+function _gorgeCenterX(Y){
+  const f=TERRAIN_FEATURES||{};
+  // tighter, more aggressive low-level route with sharper bends
+  return -7600
+       + 3000*Math.sin((Y+(f.gorgePhase||0))/6900)
+       + 1300*Math.sin((Y+(f.gorgePhase||0)*0.31)/2600)
+       + 430*Math.sin(Y/980);
+}
+function _ridgeSpineX(Y){
+  const f=TERRAIN_FEATURES||{};
+  return 8400 + 5200*Math.sin((Y+(f.ridgePhase||0))/14800) + 850*Math.sin((Y-(f.ridgePhase||0)*0.22)/3400);
+}
+function _gauss(d,w){ return Math.exp(-(d*d)/(2*w*w)); }
+function terrainWaterInfo(X,Y){
+  // Keep takeoff/base and nearby training pads dry.  Water should become a
+  // landscape navigation feature deeper in the combat area, not spawn across
+  // the runway or immediate departure corridor.
+  if (Y < 18000) return null;
+  for (const st of FLAT_SITES){
+    const d = Math.hypot(X-st.x, Y-st.y);
+    if (d < (st.r||0)*0.88) return null;
+  }
+  const rx=_riverCenterX(Y), riverD=Math.abs(X-rx);
+  const f=TERRAIN_FEATURES||{}, lakeD=Math.hypot(X-(f.lakeX||-7000),Y-(f.lakeY||26000));
+  const riverWidth = 140;
+  const lakeR = f.lakeR||1700;
+  const river = riverD < riverWidth;
+  const lake = lakeD < lakeR;
+  if (!river && !lake) return null;
+  const width = lake ? lakeR : riverWidth;
+  const d = lake ? lakeD : riverD;
+  // Water is a flat surface sitting down in the carved channel/depression.
+  // Do not let the water color ride up the terrain sidewalls; the edge value
+  // is only for shoreline fade, not for raising the water as terrain.
+  const level = lake ? 16 : 10;
+  return { water:true, river, lake, edge:clamp(d/Math.max(1,width),0,1), centerX:rx, level };
+}
+/* ground elevation (m) at world (X east, Y north) — structured mountains with
+   valleys, gorges, basins and river channels for low-level ingress. */
 function terrainH(X, Y){
   const s = (1/3000) * TERRAIN_OFF.s;       // feature scale (jittered per run)
   const ox = TERRAIN_OFF.x, oy = TERRAIN_OFF.y;
@@ -73,17 +123,44 @@ function terrainH(X, Y){
     norm += amp; amp *= 0.5; freq *= 2.0;
   }
   h /= norm;                                            // 0..1 smooth
-  let elev = Math.pow(h, 1.7) * TERRAIN_PEAK;           // high peaks, low valleys
+  let elev = Math.pow(h, 1.62) * TERRAIN_PEAK;          // high peaks, low valleys
+
+  // mountain spine + cliff faces: pushes terrain into ranges rather than blobs
+  const ridgeD = Math.abs(X - _ridgeSpineX(Y));
+  elev += TERRAIN_PEAK*0.34*_gauss(ridgeD, 2500);
+  elev += TERRAIN_PEAK*0.18*Math.max(0, Math.sin((X+TERRAIN_OFF.x)*0.00055 + (Y+TERRAIN_OFF.y)*0.00022));
+
+  // river valley and tight gorge: tactical low-level corridors
+  const riverD = Math.abs(X - _riverCenterX(Y));
+  const gorgeD = Math.abs(X - _gorgeCenterX(Y));
+  elev -= TERRAIN_PEAK*0.46*_gauss(riverD, 760);
+  elev -= TERRAIN_PEAK*0.68*_gauss(gorgeD, 420);
+  // steep walls beside the gorge create a tight, readable low-level route
+  elev += TERRAIN_PEAK*0.22*_gauss(Math.abs(gorgeD-690), 210);
+
+  // basin/lake depression for navigation and route choices
+  const f=TERRAIN_FEATURES||{};
+  const lakeD=Math.hypot(X-(f.lakeX||-7000),Y-(f.lakeY||26000));
+  elev -= TERRAIN_PEAK*0.30*_gauss(lakeD, (f.lakeR||1800)*1.15);
+
   // flatten pads: fully flat (0) inside `core`, smoothly blend to terrain by `r`
   let flat = 0;
   for (const st of FLAT_SITES){
     const d = Math.hypot(X-st.x, Y-st.y);
     const core = st.core || st.r*0.5;
-    const f = clamp((st.r - d)/Math.max(1,(st.r - core)), 0, 1);  // 1 in core -> 0 at r
-    if (f > flat) flat = f;
+    const ff = clamp((st.r - d)/Math.max(1,(st.r - core)), 0, 1);  // 1 in core -> 0 at r
+    if (ff > flat) flat = ff;
   }
   elev *= (1 - flat);
-  return elev;
+  const water=terrainWaterInfo(X,Y);
+  if (water){
+    // A water cell becomes a flat water surface, while adjacent non-water cells
+    // keep the gorge/lake walls. This prevents rivers/lakes looking like a
+    // raised terrain patch on runway-style meshes or sensor feeds.
+    const level = Number.isFinite(water.level) ? water.level : 12;
+    elev = Math.min(elev, level);
+  }
+  return Math.max(0,elev);
 }
 
 /* ===================================================================== */
@@ -159,6 +236,9 @@ const world = {
   _reloadCD: 0,       // rearm cooldown so one pass reloads once
   difficulty: 1,      // index into DIFFS (set 0..4)
   quality: 1,         // index into QUALITY_LEVELS (0=LOW,1=MED,2=HIGH)
+  lantirnOn: false,   // legacy replay compatibility only; LANTIRN display removed
+  lantirnMode: 'OFF',  // legacy replay compatibility only
+  infrastructure: { bridges:[], roads:[], powerlines:[] },
 
   // ---- in-flight weapons (bombs / missiles) ----
   bombs: [],
@@ -290,7 +370,28 @@ const rpick  = arr => arr[(Math.random()*arr.length)|0];
 /* reseed the procedural terrain so every run has different mountains */
 function reseedTerrain(){
   TERRAIN_OFF = { x:(Math.random()*2-1)*80000, y:(Math.random()*2-1)*80000, s:0.85+Math.random()*0.35 };
+  TERRAIN_FEATURES = {
+    riverPhase: (Math.random()*2-1)*50000,
+    gorgePhase: (Math.random()*2-1)*50000,
+    ridgePhase: (Math.random()*2-1)*50000,
+    lakeX: rrange(-12000,9000), lakeY: rrange(30000,47000), lakeR: rrange(900,1700)
+  };
   world.terrainGen = (world.terrainGen||0) + 1;     // invalidates cached heightfields
+}
+function buildTerrainInfrastructure(){
+  world.infrastructure = { bridges:[], roads:[], powerlines:[] };
+  const ys=[20500,25500,31500,37500,43500];
+  for (let i=0;i<ys.length;i++){
+    const y=ys[i]+rrange(-900,900), rx=_riverCenterX(y);
+    world.infrastructure.bridges.push({x:rx,y,hdg:Math.PI/2+rrange(-0.2,0.2),len:420,w:36,name:'BRIDGE'});
+    const road=[];
+    for (let k=-4;k<=4;k++){ const yy=y+k*1100; road.push({x:_riverCenterX(yy)+rrange(-350,350),y:yy,z:terrainH(_riverCenterX(yy),yy)+2}); }
+    world.infrastructure.roads.push({pts:road,name:'VALLEY RD'});
+  }
+  for (let i=0;i<3;i++){
+    const y=20500+i*8500+rrange(-1500,1500);
+    world.infrastructure.powerlines.push({a:{x:_gorgeCenterX(y)-1200,y:y-2400},b:{x:_gorgeCenterX(y+3000)+1600,y:y+2600},name:'PWR'});
+  }
 }
 
 /* spawn airborne bandits at random positions in the theatre */
@@ -699,6 +800,7 @@ function datalinkActive(){ return !!datalinkSource(); }
 
 buildMission();
 reseedTerrain();
+if (typeof buildTerrainInfrastructure==='function') buildTerrainInfrastructure();
 applyDifficulty();
 
 /* ---------- orientation basis from psi/theta/phi ---------- */
@@ -906,7 +1008,7 @@ function terrainLineClear(ax,ay,az,bx,by,bz, margin){
   margin = margin===undefined ? 70 : margin;
   const dx=bx-ax, dy=by-ay, dz=bz-az;
   const dist=Math.hypot(dx,dy);
-  const steps=clamp(Math.ceil(dist/1400), 5, 24);
+  const steps=clamp(Math.ceil(dist/900), 7, 42);
   for(let i=1;i<steps;i++){
     const u=i/steps;
     const x=ax+dx*u, y=ay+dy*u, z=az+dz*u;
@@ -914,8 +1016,39 @@ function terrainLineClear(ax,ay,az,bx,by,bz, margin){
   }
   return true;
 }
+
+/* First terrain intersection along a sensor/weapon line.  Used by missile
+   guidance so ridges act like solid masks rather than allowing weapons to
+   guide through the mountain.  Returns null when the line is clear. */
+function terrainLineBlockPoint(ax,ay,az,bx,by,bz, margin){
+  margin = margin===undefined ? 35 : margin;
+  const dx=bx-ax, dy=by-ay, dz=bz-az;
+  const dist=Math.hypot(dx,dy);
+  const steps=clamp(Math.ceil(dist/650), 10, 72);
+  for(let i=1;i<steps;i++){
+    const u=i/steps;
+    const x=ax+dx*u, y=ay+dy*u, z=az+dz*u;
+    const th=terrainH(x,y)+margin;
+    if (th > z){
+      return {x, y, z:terrainH(x,y)+2, u, terrainZ:terrainH(x,y)};
+    }
+  }
+  return null;
+}
 function samRadarCanSee(th, pos){
-  return !!(th && pos);
+  if (!th || !pos || !world || !world.ac) return false;
+  const d = Math.hypot((pos.x||0)-th.x, (pos.y||0)-th.y);
+  const agl = (pos.z||0) - terrainH(pos.x||0, pos.y||0);
+  // Low-level ingress regains its tactical role: below ~400 m AGL, SAM radars
+  // normally lose the aircraft to radar horizon / ground clutter until it is
+  // dangerously close to the site.  Close-range burn-through/acquisition still
+  // lets the launcher defend itself.
+  const closeAcquire = Math.min(3200, Math.max(1800, (th.radius||7000)*0.22));
+  if (agl < 400 && d > closeAcquire) return false;
+  // At very low level, terrain ridges still matter even above the hard horizon
+  // threshold.  This keeps valley masking useful without making SAMs inert.
+  if (d > closeAcquire && !terrainLineClear(th.x, th.y, terrainH(th.x,th.y)+18, pos.x||0, pos.y||0, pos.z||0, 90)) return false;
+  return true;
 }
 function fcrTerrainCanSee(pos){
   if (!pos || !world || !world.ac) return false;

@@ -211,7 +211,9 @@ class R3 {
         if (dist < nearClip || dist > farClip) continue;
         const h = (Hg[j][i]+Hg[j][i+1]+Hg[j+1][i+1]+Hg[j+1][i])*0.25;
         const slope = (Hg[j][i+1]-Hg[j][i]) + (Hg[j+1][i]-Hg[j][i]);
-        quads.push({a,b,c,d,dist,h,slope});
+        const wx=(X[i]+X[i+1])*0.5, wy=(Y[j]+Y[j+1])*0.5;
+        const water = (typeof terrainWaterInfo==='function') ? terrainWaterInfo(wx,wy) : null;
+        quads.push({a,b,c,d,dist,h,slope,water});
       }
     }
     quads.sort((q1,q2)=>q2.dist-q1.dist);
@@ -224,6 +226,10 @@ class R3 {
       if (coarse){                                       // fade distant land into the haze
         const m = clamp((q.dist - nearClip)/Math.max(1,(farClip - nearClip)), 0, 1)*0.85;
         r = Math.round(r*(1-m) + 12*m); g = Math.round(g*(1-m) + 44*m); bl = Math.round(bl*(1-m) + 30*m);
+      }
+      if(q.water){
+        const edge=q.water.edge||0;
+        r=Math.round(8+edge*10); g=Math.round(45+edge*22); bl=Math.round(78+edge*80);
       }
       ctx.fillStyle = 'rgb('+r+','+g+','+bl+')';
       ctx.beginPath();
@@ -241,14 +247,9 @@ class R3 {
     this._terrainRing(ac, stepC, Rc, '_tgFar', fineFar*0.7, farC, true);
     // crisp near ring on top
     const quads = this._terrainRing(ac, step, R, '_tg', 0, fineFar, false);
-    // faint contour wash on the nearest cells for a little texture
-    const ctx = this.ctx;
-    ctx.strokeStyle = 'rgba(39,255,94,0.10)'; ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (const q2 of quads){ if (q2.dist>3200) continue;
-      ctx.moveTo(q2.a.x,q2.a.y); ctx.lineTo(q2.b.x,q2.b.y); ctx.lineTo(q2.c.x,q2.c.y);
-    }
-    ctx.stroke();
+    // No post-pass wire/contour overlay.  The filled far-to-near quads are the
+    // occlusion model; drawing grid lines afterward made distant terrain seams
+    // appear through nearer ridges at low level.
   }
 
   /* ---------------- runway + airbase ---------------- */
@@ -467,6 +468,45 @@ class R3 {
     }
   }
 
+
+  drawInfrastructure(){
+    const ctx=this.ctx, inf=world.infrastructure||{};
+    // roads follow river valleys as muted low-level navigation references.
+    for (const rd of (inf.roads||[])){
+      const pts=rd.pts||[]; if(pts.length<2) continue;
+      ctx.strokeStyle='rgba(100,190,120,0.34)'; ctx.lineWidth=1.8; ctx.beginPath();
+      for(let i=1;i<pts.length;i++){
+        const a={x:pts[i-1].x,y:pts[i-1].y,z:terrainH(pts[i-1].x,pts[i-1].y)+3};
+        const b={x:pts[i].x,y:pts[i].y,z:terrainH(pts[i].x,pts[i].y)+3};
+        if(this.visibleGroundSeg(a,b,20)) this.seg(a,b);
+      }
+      ctx.stroke();
+    }
+    // sparse bridges across water/gorges
+    for (const br of (inf.bridges||[])){
+      if(!this.groundOverlayVisible(br.x,br.y,28)) continue;
+      const c=Math.cos(br.hdg||0), si=Math.sin(br.hdg||0), hl=(br.len||360)/2, hw=(br.w||34)/2, z=terrainH(br.x,br.y)+8;
+      const pts=[
+        {x:br.x-si*hl-c*hw,y:br.y-c*hl+si*hw,z}, {x:br.x+si*hl-c*hw,y:br.y+c*hl+si*hw,z},
+        {x:br.x+si*hl+c*hw,y:br.y+c*hl-si*hw,z}, {x:br.x-si*hl+c*hw,y:br.y-c*hl-si*hw,z}
+      ];
+      ctx.strokeStyle='rgba(120,255,180,0.62)'; ctx.lineWidth=1.4; ctx.beginPath();
+      this.seg(pts[0],pts[1]); this.seg(pts[1],pts[2]); this.seg(pts[2],pts[3]); this.seg(pts[3],pts[0]);
+      ctx.stroke();
+    }
+    // power lines: visible but sparse, useful for low-level orientation
+    for (const pl of (inf.powerlines||[])){
+      if(!pl.a||!pl.b) continue;
+      const za=terrainH(pl.a.x,pl.a.y), zb=terrainH(pl.b.x,pl.b.y);
+      const A={x:pl.a.x,y:pl.a.y,z:za+48}, B={x:pl.b.x,y:pl.b.y,z:zb+48};
+      if(!this.visibleGroundSeg(A,B,70)) continue;
+      ctx.strokeStyle='rgba(160,255,185,0.30)'; ctx.lineWidth=1; ctx.beginPath(); this.seg(A,B); ctx.stroke();
+      ctx.strokeStyle='rgba(160,255,185,0.42)'; ctx.beginPath();
+      this.seg({x:pl.a.x,y:pl.a.y,z:za},{x:pl.a.x,y:pl.a.y,z:za+60});
+      this.seg({x:pl.b.x,y:pl.b.y,z:zb},{x:pl.b.x,y:pl.b.y,z:zb+60}); ctx.stroke();
+    }
+  }
+
   label3d(p, txt, col, size){
     const c = this.project(p);
     if (!c || c.z<1 || c.z>30000) return;
@@ -529,9 +569,10 @@ class R3 {
     ctx.save();
     ctx.lineJoin='round'; ctx.lineCap='round';
     this.drawSky();
+    this.drawHaze();       // behind terrain so ridges stay visually solid
     this.drawTerrain(ac);
-    this.drawHaze();
     this.drawRunway();
+    this.drawInfrastructure();
     this.drawThreats();
     this.drawTarget();
     this.drawWaypoints();

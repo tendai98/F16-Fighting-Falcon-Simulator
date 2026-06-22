@@ -121,9 +121,10 @@ function clearInputState(){
 function resetCockpitState(){
   world.activeMfdId='center';
   world.steerpoint=1;
-  world.designated=false;
+  world.designated=false; world.lantirnOn=false; world.lantirnMode='OFF';
   world.gndLock=null; world.airLock=null; world.harmLock=null;
   world.tgpLaser=false;
+  world.lantirnOn=false;
   world.masterArm='SAFE'; world.masterMode='NAV'; world.selectedStation=5;
   world.dlEntry=''; world.datalinkTuned='';
   if (world.ecm){ world.ecm.on=false; world.ecm.jam=[]; world.ecm.cursor=50; }
@@ -344,7 +345,7 @@ const HELP_REF = {
       ['FCR', 'Radar page (RWS / SAR-GMT / HAD).'],
       ['HSD', 'Nav / situation map.  B5 \u2192 THREAT/EWS page.'],
       ['SMS', 'Stores Management \u2014 select & view weapon stations.'],
-      ['TGP', 'Targeting-pod video + laser.'],
+      ['TGP', 'Targeting-pod video + laser designation for precision attack.'],
       ['DED', 'Data Entry \u2014 CNI, steerpoints, BIT, and the TUNE keypad.'],
       ['DLNK', 'Datalink picture (reached from the DED). L1-L4 zoom.'],
       ['THR', 'Threat/EWS \u2014 inbound-missile tracks + launch points (HSD \u2192 B5). Tap a launch point/emitter to designate it.'],
@@ -465,7 +466,7 @@ function restartMission(){
   ac.tas=0; ac.throttle=0; ac.gear=true; ac.onGround=true;
   ac.g=1; ac.aoa=0; ac.vy=0; ac.integrity=100; ac.flares=30; ac.chaff=20;
   world.t=0; world.paused=false; world.outcome=null; world.outcomeReason=null; world.message=''; world.messageT=0; world._takeoffOK=false;
-  world.steerpoint=1; world.designated=false;
+  world.steerpoint=1; world.designated=false; world.lantirnOn=false; world.lantirnMode='OFF';
   world.gndLock=null; world.airLock=null; world.harmLock=null; world.tgpLaser=false;
   for (const k in MFDS){ if (MFDS[k]) MFDS[k].laser=false; }
   world.masterArm='SAFE'; world.masterMode='NAV';
@@ -481,6 +482,7 @@ function restartMission(){
   world.target.buildings.forEach(b=>b.destroyed=false);
   buildMission();
   reseedTerrain();
+  if (typeof buildTerrainInfrastructure==='function') buildTerrainInfrastructure();
   applyDifficulty();
   if (window.ReplayUtils) ReplayUtils.ensureIds();
   if (window.ScoreTracker && (!window.GameFlow || GameFlow.isActiveMission())) ScoreTracker.start();
@@ -842,8 +844,9 @@ function setupLowLevel(){ tutResetEZ();
   if (s){ s.hopCapable=false; s.trainingFixedFreq=true; s._hopT=999999; s.radius=Math.max(s.radius||8500, 8500); }
   world.masterMode='NAV'; world.masterArm='SAFE';
   world.selectedStation=7; world.stations.forEach(st=>st.sel=(st.id===7));
-  world.ac.pos.z=terrainH(world.ac.pos.x,world.ac.pos.y)+360; world.ac.tas=255; world.ac.throttle=0.72; world.ac.gear=false; world._tutFire=true;
-  if (MFDS.left) MFDS.left.setPage('HSD'); if (MFDS.center) { MFDS.center.setPage('FCR'); MFDS.center.fcrMode='HAD'; }
+  world.ac.pos.z=terrainH(world.ac.pos.x,world.ac.pos.y)+420; world.ac.tas=270; world.ac.throttle=0.75; world.ac.gear=false; world._tutFire=true;
+  if (MFDS.left) MFDS.left.setPage('HSD');
+  if (MFDS.center) { MFDS.center.setPage('FCR'); MFDS.center.fcrMode='HAD'; }
 }
 function setupDatalink(){ tutResetEZ(); clearThreats();
   placeJetFacing(world.target.x, world.target.y, 14000, 4000);
@@ -922,14 +925,15 @@ const L_GUN = [
   {t:'GUNS COMPLETE', point:null, b:'Good gun kills come from controlled closure, a steady target track and short bursts when the LCOS is red. Yellow is range. Red is shoot.'},
 ];
 const L_LOW = [
-  {t:'LOW-LEVEL SAM ATTACK', point:null, b:'Low-level attacks are about terrain discipline and quick sensor work. SAMs now engage normally inside their threat ring, so stay low for cover, use the HSD for the tactical picture, then pop up or designate when you are ready to shoot.'},
-  {t:'STAY LOW', point:{hud:'alt'}, b:'Hold a controlled low-level profile below 1500 m AGL. Terrain can block your outside-view overlays, so cross-check the HSD and TGP.', live:()=>{const agl=world.ac.pos.z-terrainH(world.ac.pos.x,world.ac.pos.y); return 'AGL '+Math.round(agl)+' m';}, done:()=>{const agl=world.ac.pos.z-terrainH(world.ac.pos.x,world.ac.pos.y); return agl>180&&agl<1500;}},
-  {t:'ENTER THE RING', point:{hud:'steer'}, b:'Fly toward the SAM. Once you enter its range, expect tracking and be ready to jam, dispense, or shoot.', live:()=>{const s=world.threats.find(t=>t.live); return s?((s.tracking?'TRACKING':'SEARCH')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>{const s=world.threats.find(t=>t.live); return !!s && distTo(s.x,s.y)<s.radius*0.95;}},
-  {t:'THREAT ACTIVE', point:{hud:'steer'}, b:'The SAM should now track normally in its detection ring. Do not rely on an altitude exploit; defeat it with jamming, maneuvering, or HARM.', live:()=>{const s=world.threats.find(t=>t.live); return s?((s.tracking?'TRACKING':'SEARCH')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>world.threats.some(t=>t.live&&t.tracking)},
-  {t:'A-G + ARM', key:'M / B', point:{hud:'mode'}, b:'Set master mode A-G and Master Arm ARM or SIM while staying low.', done:()=>world.masterMode==='A-G'&&world.masterArm!=='SAFE'},
-  {t:'LOCK EMITTER', point:{mfd:'center',screen:true,cap:'HAD'}, b:'On the HAD/FCR page, tap the SAM emitter to lock it for HARM. A designator symbol now appears in the outside view when the target is visible.', done:()=>!!world.harmLock},
-  {t:'MAGNUM LOW', key:'SPACE', point:{hud:'steer'}, b:'Fire the HARM with SPACE, then stay low or break away as needed.', done:()=>world.sams.some(s=>s.kind==='HARM')||world.threats.every(t=>!t.live)},
-  {t:'LOW-LEVEL COMPLETE', point:null, b:'Low-level ingress helps with terrain cover and visual clutter, but SAMs still work when you enter their range. Use the HSD, sensor designator and HARM workflow to prosecute the threat.'},
+  {t:'LOW-LEVEL INGRESS', point:null, b:'Low-level attacks now rely on the outside view, the HUD altitude tape, HSD tactical picture, and radar-horizon masking.'},
+  {t:'HSD UP', point:{osb:'T2',mfd:'left'}, b:'Keep the HSD on the left MFD. It gives the route, steerpoints and SAM ring geometry without adding a separate terrain page.', done:()=>Object.keys(MFDS).some(k=>MFDS[k].page==='HSD')},
+  {t:'STAY LOW', point:{hud:'alt'}, b:'Fly below about 400 m AGL to exploit the SAM radar horizon. Use the HUD altitude tape and outside terrain cues to stay low without hitting ridgelines.', live:()=>{const agl=world.ac.pos.z-terrainH(world.ac.pos.x,world.ac.pos.y); return 'AGL '+Math.round(agl)+' m';}, done:()=>{const agl=world.ac.pos.z-terrainH(world.ac.pos.x,world.ac.pos.y); return agl>120&&agl<420;}},
+  {t:'ENTER THE RING', point:{hud:'steer'}, b:'Fly toward the SAM while staying low. Below the radar horizon, the site should search but not get a stable firing track until you are very close or exposed.', live:()=>{const s=world.threats.find(t=>t.live); return s?((s.tracking?'TRACKING':'SEARCH')+'  '+(distTo(s.x,s.y)/NM).toFixed(1)+' NM'):'';}, done:()=>{const s=world.threats.find(t=>t.live); return !!s && distTo(s.x,s.y)<s.radius*0.95;}},
+  {t:'POP-UP WINDOW', point:{hud:'mode'}, b:'When ready to attack, pop up only as much as needed, then return low. If you climb too early, the SAM can track and launch.', done:()=>{const agl=world.ac.pos.z-terrainH(world.ac.pos.x,world.ac.pos.y); return agl>420;}},
+  {t:'A-G + ARM', key:'M / B', point:{hud:'mode'}, b:'Set master mode A-G and Master Arm ARM or SIM.', done:()=>world.masterMode==='A-G'&&world.masterArm!=='SAFE'},
+  {t:'LOCK EMITTER', point:{mfd:'center',screen:true,cap:'HAD'}, b:'On the center HAD/FCR page, tap the SAM emitter to lock it for HARM. Use the HSD and outside view for positioning.', done:()=>!!world.harmLock},
+  {t:'MAGNUM LOW', key:'SPACE', point:{hud:'steer'}, b:'Fire the HARM with SPACE, then descend again. Terrain masking can still block weapons and radar line-of-sight.', done:()=>world.sams.some(s=>s.kind==='HARM')||world.threats.every(t=>!t.live)},
+  {t:'LOW-LEVEL COMPLETE', point:null, b:'The low-level workflow is now: HSD for navigation, HUD/outside view for terrain, stay below the radar horizon, pop up briefly, shoot, then descend.'},
 ];
 const L_SEAD = [
   {t:'SEAD \u2014 KILL A SAM', point:null, b:'Now take the fight to the air defences. A single SA-6 SAM site is ahead. You\u2019ll find its radar, lock it and destroy it with a HARM anti-radiation missile. (It won\u2019t fire during training.)'},
@@ -1041,7 +1045,7 @@ function buildIntroOffer(){
   if (document.getElementById('intro-offer')) return;
   const o=document.createElement('div'); o.id='intro-offer';
   o.innerHTML='<div class="io-card"><div class="io-h">NEW PILOT?</div>'+
-    '<div class="io-b">Flight School has short, guided lessons \u2014 takeoff &amp; navigation, targeting-pod and SAR strikes, air-to-air, datalink and ECM jamming. Each one points you through the steps.</div>'+
+    '<div class="io-b">Flight School has short, guided lessons \u2014 takeoff &amp; navigation, targeting-pod, SAR, low-level flying, air-to-air, datalink and ECM jamming. Each one points you through the steps.</div>'+
     '<div class="io-btns"><button class="io-go">\u25b8 OPEN FLIGHT SCHOOL</button><button class="io-skip">SKIP FOR NOW</button></div>'+
     '<div class="io-foot">Replay any time from the <b>H</b> scoreboard.</div></div>';
   document.body.appendChild(o);

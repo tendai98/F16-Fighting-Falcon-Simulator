@@ -47,7 +47,12 @@ class MFD {
     });
     this.refresh();
   }
-  setPage(p){ this.page=p; if (window.ReplayRecorder) ReplayRecorder.recordEvent('mfd_page', { mfd:this.id, page:p }); this.refresh(); }
+  setPage(p){
+    if (p==='LANT') p='HSD';
+    this.page=p;
+    if (window.ReplayRecorder) ReplayRecorder.recordEvent('mfd_page', { mfd:this.id, page:p });
+    this.refresh();
+  }
   setRange(r){ this.range=r; this.refresh(); }
 
   osb(k){
@@ -248,6 +253,7 @@ class MFD {
   render(){
     const ctx=this.ctx;
     ctx.fillStyle='#01160a'; ctx.fillRect(0,0,this.W,this.H);
+    if (this.page==='LANT') this.page='HSD';
     (PAGES[this.page]||PAGES.DED).render(this,ctx);
     footer(this,ctx);
   }
@@ -1309,6 +1315,10 @@ PAGES.TGP={
     ctx.fillText(m.laser?'LZR 1688 \u25cf':'LZR 1688',W-6,H-12);
   }
 };
+
+
+
+/* ---------- LANTIRN removed: low-level navigation now uses HSD/FCR/HAD, outside view, and radar-horizon masking. ---------- */
 
 /* ---------- DED : up-front controls / data entry (was the ICP) ---------- */
 let DED_PAGE = 'CNI';     // CNI | STPT | BIT | TUNE

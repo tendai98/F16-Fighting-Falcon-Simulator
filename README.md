@@ -577,6 +577,20 @@ Level 5 `AIR SUPER` is an air-to-air-only mission. Score multipliers are now Lev
 
 ## Recent update: Sensor designator / SAM restore
 
-- SAM radar-horizon AGL gating was removed; SAMs again track/fire normally inside their threat rings.
+- SAM radar-horizon masking is active for low-level ingress: below roughly 400 m AGL, SAMs have reduced detection until you are close or exposed.
 - Terrain still occludes outside-view ground overlays so markers do not draw through mountains.
 - TGP/FCR/HAD/air sensor locks now show a visible HUD/POV designator symbol when the target is in view.
+
+## Terrain-masked missile update
+
+Missiles now respect terrain line-of-sight. SAM/AAM shots can fail if the target ducks behind terrain, and ground-attack missiles can impact the ridge if fired at a masked designation. Terrain haze and grid rendering were also adjusted so low-level terrain reads as a solid surface.
+
+## LANTIRN removed / HUD restored
+
+The experimental LANTIRN terrain-navigation page has been removed. HSD and TGP no longer expose LANTIRN OSBs, and legacy replay states that reference the old `LANT` page are redirected to HSD.
+
+The full-screen legacy flight HUD remains restored: speed/altitude tapes, heading, pitch ladder, FPM, roll scale, CCIP/gun cues, mode, weapon, steerpoint and warning information render in the original wide HUD style.
+
+Low-level ingress now relies on the outside view, HUD altitude tape, HSD tactical picture, HAD/FCR emitter lock, terrain-masked missiles and SAM radar-horizon masking rather than a separate terrain page.
+
+Terrain-masked missiles, terrain solidity, replay/backend sync, enemy countermeasure tuning, Level 5, and the newer gameplay systems remain intact.

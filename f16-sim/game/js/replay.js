@@ -119,9 +119,10 @@ var ReplayUtils={
     this.ensureIds();
     return{
       terrainOff:(typeof TERRAIN_OFF!=='undefined')?_jc(TERRAIN_OFF):null,
+      terrainFeatures:(typeof TERRAIN_FEATURES!=='undefined')?_jc(TERRAIN_FEATURES):null,
       flatSites:(typeof FLAT_SITES!=='undefined')?_jc(FLAT_SITES):null,
       runway:_jc(world.runway), waypoints:_jc(world.waypoints), bullseye:_jc(world.bullseye),
-      airstrips:_jc(world.airstrips||[]),
+      airstrips:_jc(world.airstrips||[]), infrastructure:_jc(world.infrastructure||{}),
       stations:_jc(world.stations), difficulty:world.difficulty, difficultyName:_difficultyName(world.difficulty),
       missionSeed:world._missionSeed||0, cockpit:this.cockpit(), snapshot:this.snap({cockpit:true,keepVisuals:true})
     };
@@ -257,11 +258,13 @@ var ReplayPlayback={
 
   _init:function(i){
     try{ if(i.terrainOff) TERRAIN_OFF=_jc(i.terrainOff); }catch(e){}
+    try{ if(i.terrainFeatures) TERRAIN_FEATURES=_jc(i.terrainFeatures); }catch(e){}
     try{ if(i.flatSites) FLAT_SITES=_jc(i.flatSites); }catch(e){}
     if(i.runway) world.runway=_jc(i.runway);
     if(i.waypoints) world.waypoints=_jc(i.waypoints);
     if(i.bullseye) world.bullseye=_jc(i.bullseye);
     world.airstrips=_jc(i.airstrips||[]);
+    world.infrastructure=_jc(i.infrastructure||{bridges:[],roads:[],powerlines:[]});
     if(i.stations) world.stations=_jc(i.stations);
     world.difficulty=i.difficulty||0;
     if(i.cockpit) this._applyCockpit(i.cockpit);
@@ -431,7 +434,7 @@ var ReplayPlayback={
     world.activeMfdId=c.activeMfdId||world.activeMfdId||'center';
     world.steerpoint=c.steerpoint||world.steerpoint||1; world.masterArm=c.masterArm||'SAFE'; world.masterMode=c.masterMode||'NAV'; world.selectedStation=c.selectedStation||world.selectedStation||5;
     if(typeof isWeaponStation==='function'){ var st=(world.stations||[]).find(function(s){return s.id===world.selectedStation;}); if(!isWeaponStation(st)){ var first=(world.stations||[]).find(isWeaponStation); world.selectedStation=first?first.id:5; } }
-    world.designated=!!c.designated; world.tgpLaser=!!c.tgpLaser; world.dlEntry=c.dlEntry||''; world.datalinkTuned=c.datalinkTuned||'';
+    world.designated=!!c.designated; world.tgpLaser=!!c.tgpLaser; world.lantirnOn=false; world.lantirnMode='OFF'; world.dlEntry=c.dlEntry||''; world.datalinkTuned=c.datalinkTuned||'';
     if(world.ecm && c.ecm){ world.ecm.on=!!c.ecm.on; world.ecm.cursor=c.ecm.cursor||50; world.ecm.jam=_jc(c.ecm.jam||[]); }
     if(c.stations && world.stations){
       var by={}; c.stations.forEach(function(s){by[s.id]=s;});
@@ -451,7 +454,7 @@ var ReplayPlayback={
       for(var id in c.mfds){
         var m=MFDS[id], s=c.mfds[id]; if(!m||!s) continue;
         var pageChanged=(m.page!==s.page);
-        m.page=s.page||m.page; m.range=s.range||m.range; m.azScan=s.azScan||m.azScan; m.sweep=s.sweep||0; m.sweepDir=s.sweepDir||1; m.fcrMode=s.fcrMode||m.fcrMode;
+        m.page=(s.page==='LANT'?'HSD':(s.page||m.page)); m.range=s.range||m.range; m.azScan=s.azScan||m.azScan; m.sweep=s.sweep||0; m.sweepDir=s.sweepDir||1; m.fcrMode=s.fcrMode||m.fcrMode;
         m.tgpFov=s.tgpFov||m.tgpFov; m.tgpZoom=s.tgpZoom||m.tgpZoom; m.tgpTrack=s.tgpTrack||m.tgpTrack; m.tgpPol=s.tgpPol||m.tgpPol; m.laser=!!s.laser; m.dlRange=s.dlRange||m.dlRange||80;
         m.locked=s.lockedId?ReplayUtils.findEntity(s.lockedId):null;
         if(m.refresh) m.refresh();

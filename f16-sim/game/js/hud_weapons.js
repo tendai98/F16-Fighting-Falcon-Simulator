@@ -105,17 +105,18 @@ function missileProfile(m){
   // These profiles still make good shots dangerous, but they force bad-aspect or
   // post-merge shots to bleed energy and self-terminate instead of boomeranging.
   if (m.groundPos){
-    return /HARM/.test(w) ? {name:'HARM',maxSpd:760,minSpd:210,accel:130,drag:46,burn:7.0,maxTurn:0.95,coastTurn:0.30,turnDrain:0.09,turnDrag:50,burnDrain:0.012,coastDrain:0.050,breakAng:112*DEG,breakTime:0.65,seekerLimit:82*DEG,prox:38}
-                         : {name:'AGM', maxSpd:610,minSpd:180,accel:105,drag:42,burn:5.5,maxTurn:0.90,coastTurn:0.30,turnDrain:0.10,turnDrag:46,burnDrain:0.014,coastDrain:0.050,breakAng:112*DEG,breakTime:0.70,seekerLimit:78*DEG,prox:32};
+    return /HARM/.test(w) ? {name:'HARM',maxSpd:760,minSpd:210,accel:130,drag:46,burn:7.0,maxTurn:0.95,coastTurn:0.30,turnDrain:0.09,turnDrag:50,burnDrain:0.012,coastDrain:0.050,breakAng:112*DEG,breakTime:0.65,seekerLimit:82*DEG,prox:38,maxTravel:18*NM,maskBreak:1.25}
+                         : {name:'AGM', maxSpd:610,minSpd:180,accel:105,drag:42,burn:5.5,maxTurn:0.90,coastTurn:0.30,turnDrain:0.10,turnDrag:46,burnDrain:0.014,coastDrain:0.050,breakAng:112*DEG,breakTime:0.70,seekerLimit:78*DEG,prox:32,maxTravel:10*NM,maskBreak:1.15};
   }
-  if (/9X|AIM-9/.test(w)) return {name:'AIM-9X',seeker:'IR',maxSpd:830,minSpd:235,accel:235,drag:68,burn:4.6,maxTurn:1.75,coastTurn:0.28,turnDrain:0.30,turnDrag:130,burnDrain:0.016,coastDrain:0.088,breakAng:86*DEG,breakTime:0.24,seekerLimit:66*DEG,noReacquireT:0.12,prox:38};
-  if (/120|AMRAAM/.test(w)) return {name:'AIM-120',seeker:'RADAR',maxSpd:920,minSpd:265,accel:245,drag:60,burn:6.6,maxTurn:1.18,coastTurn:0.24,turnDrain:0.26,turnDrag:120,burnDrain:0.014,coastDrain:0.074,breakAng:78*DEG,breakTime:0.27,seekerLimit:58*DEG,noReacquireT:0.14,prox:44};
-  if (/RED_AAM/.test(w)) return {name:'RED_AAM',seeker:'RADAR',maxSpd:850,minSpd:250,accel:220,drag:62,burn:5.7,maxTurn:1.05,coastTurn:0.23,turnDrain:0.25,turnDrag:116,burnDrain:0.016,coastDrain:0.080,breakAng:78*DEG,breakTime:0.28,seekerLimit:56*DEG,noReacquireT:0.15,prox:44};
-  return {name:'SAM',seeker:'RADAR',maxSpd:980,minSpd:285,accel:260,drag:68,burn:7.1,maxTurn:0.90,coastTurn:0.22,turnDrain:0.28,turnDrag:140,burnDrain:0.016,coastDrain:0.086,breakAng:72*DEG,breakTime:0.26,seekerLimit:54*DEG,noReacquireT:0.13,prox:46};
+  if (/9X|AIM-9/.test(w)) return {name:'AIM-9X',seeker:'IR',maxSpd:830,minSpd:235,accel:235,drag:68,burn:4.6,maxTurn:1.75,coastTurn:0.28,turnDrain:0.30,turnDrag:130,burnDrain:0.016,coastDrain:0.088,breakAng:86*DEG,breakTime:0.24,seekerLimit:66*DEG,noReacquireT:0.12,prox:38,maxTravel:6.5*NM,maskBreak:0.85};
+  if (/120|AMRAAM/.test(w)) return {name:'AIM-120',seeker:'RADAR',maxSpd:920,minSpd:265,accel:245,drag:60,burn:6.6,maxTurn:1.18,coastTurn:0.24,turnDrain:0.26,turnDrag:120,burnDrain:0.014,coastDrain:0.074,breakAng:78*DEG,breakTime:0.27,seekerLimit:58*DEG,noReacquireT:0.14,prox:44,maxTravel:14*NM,maskBreak:1.10};
+  if (/RED_AAM/.test(w)) return {name:'RED_AAM',seeker:'RADAR',maxSpd:850,minSpd:250,accel:220,drag:62,burn:5.7,maxTurn:1.05,coastTurn:0.23,turnDrain:0.25,turnDrag:116,burnDrain:0.016,coastDrain:0.080,breakAng:78*DEG,breakTime:0.28,seekerLimit:56*DEG,noReacquireT:0.15,prox:44,maxTravel:9.5*NM,maskBreak:1.00};
+  return {name:'SAM',seeker:'RADAR',maxSpd:980,minSpd:285,accel:260,drag:68,burn:7.1,maxTurn:0.90,coastTurn:0.22,turnDrain:0.28,turnDrag:140,burnDrain:0.016,coastDrain:0.086,breakAng:72*DEG,breakTime:0.26,seekerLimit:54*DEG,noReacquireT:0.13,prox:46,maxTravel:8.5*NM,maskBreak:0.95};
 }
 function seedMissile(m, profile){
   if (!m) return;
   const p=profile||missileProfile(m);
+  if (!m.origin) m.origin = {...(m.pos||v3(0,0,0))};
   if (m.energy===undefined) m.energy=1;
   if (m._pd===undefined) m._pd=1e9;
   if (m._lostT===undefined) m._lostT=0;
@@ -123,7 +124,18 @@ function seedMissile(m, profile){
   if (m._behindT===undefined) m._behindT=0;
   if (m._prevTrueD===undefined) m._prevTrueD=1e9;
   if (!m.life) m.life = p.name==='SAM' ? 16 : p.name==='AIM-120' ? 16 : 12;
+  if (m._maskT===undefined) m._maskT=0;
+  if (m._rangeTraveled===undefined) m._rangeTraveled=0;
   if (!m.trail) m.trail=[];
+}
+function missileRangeExceeded(m, p){
+  const maxTravel = p.maxTravel || (p.name==='SAM'?8.5*NM:p.name==='RED_AAM'?9.5*NM:p.name==='AIM-120'?14*NM:p.name==='AIM-9X'?6.5*NM:12*NM);
+  const fromOrigin = m.origin ? vlen(vsub(m.pos, m.origin)) : 0;
+  return Math.max(m._rangeTraveled||0, fromOrigin) > maxTravel;
+}
+function missileTerrainBlock(m, tgtPos, margin){
+  if (!m || !tgtPos || typeof terrainLineBlockPoint !== 'function') return null;
+  return terrainLineBlockPoint(m.pos.x,m.pos.y,m.pos.z,tgtPos.x,tgtPos.y,tgtPos.z, margin===undefined?35:margin);
 }
 function addCountermeasure(pos, vel, kind, team){
   ensureCombatArrays();
@@ -607,8 +619,32 @@ function updateMissiles(dt){
     const tgtObj = missileTargetObject(m);
     if (!tgtPos || m.t>m.life){ world.sams.splice(i,1); continue; }
 
-    let notch = 0, decoyed = false;
-    if (!m.groundPos){
+    let notch = 0, decoyed = false, terrainBlocked = false, terrainImpact = null;
+    const block = missileTerrainBlock(m, tgtPos, m.groundPos ? 22 : 35);
+    if (block && block.u < 0.985){
+      terrainBlocked = true;
+      terrainImpact = block;
+      m._maskT = (m._maskT||0) + dt;
+      m.energy -= (m.groundPos ? 0.18 : (isRadarMissile(m)?0.26:0.18)) * dt;
+      if (m.groundPos){
+        // Ground-attack weapons cannot guide through terrain.  If the target is
+        // designated behind a ridge, the missile flies into the mask point
+        // instead of magically hitting the selected object.
+        tgtPos = {x:block.x, y:block.y, z:block.z};
+        m._terrainMaskedTarget = true;
+      } else if (m._lastTgtPos){
+        // Air-to-air missiles coast toward stale target memory briefly, then fail.
+        const tv=objectVel(tgtObj||{});
+        tgtPos=vadd(m._lastTgtPos, vscale(tv, Math.min(0.55, m._maskT)));
+      } else {
+        tgtPos = {x:block.x, y:block.y, z:block.z};
+      }
+    } else {
+      m._maskT = Math.max(0,(m._maskT||0)-dt*0.75);
+      if (m.groundPos) m._terrainMaskedTarget = false;
+    }
+
+    if (!m.groundPos && !terrainBlocked){
       notch = notchQuality(m, tgtObj, tgtPos);
       const dpos = chooseDecoyTarget(m, tgtObj, tgtPos, notch);
       if (dpos){ tgtPos=dpos; decoyed=true; }
@@ -619,6 +655,8 @@ function updateMissiles(dt){
       } else {
         m._lastTgtPos={...trueTgtPos};
       }
+    } else if (!m.groundPos && !m._lastTgtPos && trueTgtPos){
+      m._lastTgtPos={...trueTgtPos};
     }
 
     const toTgt=vsub(tgtPos, m.pos);
@@ -646,8 +684,10 @@ function updateMissiles(dt){
     const accel = m.t<=prof.burn ? prof.accel : -prof.drag;
     m.spd = clamp((m.spd||prof.minSpd) + accel*dt - turnLoad*prof.turnDrag*dt, prof.minSpd, prof.maxSpd);
     if (m.t>prof.burn && m.spd <= prof.minSpd+8) m.energy -= 0.11*dt;
+    const prevPos = {x:m.pos.x, y:m.pos.y, z:m.pos.z};
     m.vel = vscale(dir, m.spd);
     m.pos = vadd(m.pos, vscale(m.vel, dt));
+    m._rangeTraveled = (m._rangeTraveled||0) + vlen(vsub(m.pos, prevPos));
     if (!m.trail) m.trail=[]; m.trail.push({x:m.pos.x,y:m.pos.y,z:m.pos.z}); if (m.trail.length>18) m.trail.shift();
 
     const newTrueD = trueTgtPos ? vlen(vsub(trueTgtPos, m.pos)) : d;
@@ -664,19 +704,23 @@ function updateMissiles(dt){
     // Energy-maneuverability failure: once the target crosses behind the seeker or
     // the missile is diverging after closest approach, the missile goes safe.  It
     // must not turn around and reacquire like a boomerang.
-    if (!m.groundPos && (m.energy<=0.05 || m._lostT>prof.breakTime || m._behindT>(prof.noReacquireT||0.22) || m._divergeT>0.18 || (m.t>1.2 && passedClose))){
-      selfDestructMissile(i, m, 'self_destruct');
+    if (!m.groundPos && (missileRangeExceeded(m, prof) || m.energy<=0.05 || m._maskT>(prof.maskBreak||1.0) || m._lostT>prof.breakTime || m._behindT>(prof.noReacquireT||0.22) || m._divergeT>0.18 || (m.t>1.2 && passedClose))){
+      selfDestructMissile(i, m, missileRangeExceeded(m, prof)?'out_of_range':(m._maskT>(prof.maskBreak||1.0)?'terrain_mask':'self_destruct'));
       continue;
     }
 
     if (m.groundPos){                          // guided surface attack (AGM / HARM)
       const gd = vlen(vsub(tgtPos, m.pos));
       const prox = gd<prof.prox || (gd<180 && m._gpd!==undefined && gd>m._gpd);  // hit or closest-approach
-      if (prox || hitGround || m.energy<=0.03){
+      if (prox || hitGround || missileRangeExceeded(m, prof) || m.energy<=0.03){
         const ip = (gd<220) ? tgtPos : {x:m.pos.x, y:m.pos.y, z:m.pos.z};
         addEffect(ip, 1.3);
-        if (window.recordMissionEvent) recordMissionEvent('projectile_impact', { weapon:m.weapon||m.kind||'MISSILE', kind:m.kind||'missile', x:ip.x, y:ip.y, z:ip.z });
-        if (m.live!==false && m.energy>0.02){
+        if (window.recordMissionEvent) recordMissionEvent('projectile_impact', { weapon:m.weapon||m.kind||'MISSILE', kind:m.kind||'missile', x:ip.x, y:ip.y, z:ip.z, terrainMasked:!!m._terrainMaskedTarget });
+        if (m._terrainMaskedTarget){
+          banner('MISSILE TERRAIN MASKED', 1.2);
+        } else if (missileRangeExceeded(m, prof)){
+          banner('MISSILE OUT OF RANGE', 1.0);
+        } else if (m.live!==false && m.energy>0.02){
           if (m.kind==='HARM' || /HARM/.test(m.kind||'')){
             if (m.emitter && m.emitter.live){
               m.emitter.live=false; m.emitter.tracking=false;
@@ -720,6 +764,8 @@ function updateMissiles(dt){
       }
       world.sams.splice(i,1);
     } else if (hitGround){
+      addEffect({x:m.pos.x,y:m.pos.y,z:terrainH(m.pos.x,m.pos.y)+1}, 0.9, 'blast');
+      if (window.recordMissionEvent) recordMissionEvent('projectile_impact', { weapon:m.weapon||m.kind||'MISSILE', kind:m.kind||'missile', x:m.pos.x, y:m.pos.y, z:terrainH(m.pos.x,m.pos.y)+1, terrainHit:true });
       world.sams.splice(i,1);
     }
   }
