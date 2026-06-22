@@ -437,52 +437,138 @@ PAGES.FCR={
     }
   },
 
-  /* SAR : synthetic-aperture ground map patch around the steerpoint/target */
+  /* SAR : synthetic-aperture ground map patch around the aircraft */
   renderSAR(m,ctx){
-    // Forward-looking SAR / GMT map: the patch is cued AHEAD of the jet (so you
-    // scan the ground as you fly), sweeps like a radar, and tags moving vehicles,
-    // mobile TELs and (SAR-only) underground facilities. Tap a contact to hand it
-    // to the TGP. Heights are cached on a quantised centre -> no per-frame noise.
-    const ac=world.ac, W=m.W, H=m.H, PADx=20, PADt=30, PADb=40;
-    const FW=W-2*PADx, FH=H-PADt-PADb, cx0=PADx+FW/2, cy0=PADt+FH/2;
-    const halfNM=m.range/4, half=halfNM*NM, half2=2*half;
-    const cs=Math.cos(ac.psi), sn=Math.sin(ac.psi);
-    const cueX=ac.pos.x+Math.sin(ac.psi)*half, cueY=ac.pos.y+Math.cos(ac.psi)*half;
-    const ctr={ x:Math.round(cueX/800)*800, y:Math.round(cueY/800)*800 };
-    const PN=64;
-    let sp=this._sarH;
-    if (!sp || sp.cx!==ctr.x || sp.cy!==ctr.y || sp.half!==half || sp.gen!==world.terrainGen){
-      const Hs=new Float32Array(PN*PN);
-      for (let j=0;j<PN;j++) for (let i=0;i<PN;i++){
-        const wx=ctr.x+((i+0.5)/PN-0.5)*half2, wy=ctr.y+((j+0.5)/PN-0.5)*half2;
-        Hs[j*PN+i]=terrainH(wx,wy);
-      }
-      sp=this._sarH={cx:ctr.x,cy:ctr.y,half,Hs,gen:world.terrainGen};
-    }
-    const Hs=sp.Hs;
-    let pal=this._sarPal;
-    if(!pal){ pal=this._sarPal=[]; for(let k=0;k<16;k++) pal.push('rgba(120,255,150,'+(0.08+(k/15)*0.62).toFixed(3)+')'); }
+    // Track-up SAR/GMT tactical geography display.  The aircraft is now the
+    // fixed reference point near the bottom of the display, so terrain/contacts
+    // scroll down and rotate around ownship like HSD/HAD as you move.  This
+    // keeps the synthetic aperture style while making the page useful for
+    // low-level route judgement and target designation.
+    const ac=world.ac, W=m.W, H=m.H, PADx=18, PADt=30, PADb=38;
+    const FW=W-2*PADx, FH=H-PADt-PADb;
+    const ownX=PADx+FW/2, ownY=PADt+FH*0.80;
+    const rangeNM=m.range||20;
+    const maxF=Math.max(4*NM, rangeNM*NM);
+    const maxBack=Math.max(1.4*NM, maxF*0.16);
+    const side=maxF*0.54;
+    const scaleY=(ownY-PADt)/maxF;
+    const scaleX=(FW*0.46)/side;
+    const sn=Math.sin(ac.psi||0), cs=Math.cos(ac.psi||0);
     const pk=(typeof TERRAIN_PEAK!=='undefined'?TERRAIN_PEAK:1850);
-    const NX=40, NY=34, cw=FW/NX, ch=FH/NY;
-    const sweep=(world.t*0.5)%1, sweepY=PADt+sweep*FH;     // range sweep, far(top)->near
-    for (let j=0;j<NY;j++) for (let i=0;i<NX;i++){
-      const lx=((i+0.5)/NX-0.5)*half2, ly=((j+0.5)/NY-0.5)*half2;
-      const gx=ctr.x+lx*cs+ly*sn, gy=ctr.y+lx*sn-ly*cs;
-      let pi=((gx-ctr.x)/half2+0.5)*PN|0; if(pi<0)pi=0; else if(pi>=PN)pi=PN-1;
-      let pj=((gy-ctr.y)/half2+0.5)*PN|0; if(pj<0)pj=0; else if(pj>=PN)pj=PN-1;
-      const hgt=Hs[pj*PN+pi];
-      const spk=0.6+0.4*(((i*7+j*13)^(i+j))&7)/7;
-      let b=clamp((hgt/pk)*0.85+0.10,0,1)*spk;
-      const cyc=PADt+(j+0.5)*ch; let dphase=(cyc-sweepY)/FH; if(dphase<0)dphase+=1;
-      b*=(0.55+0.45*(1-dphase));                            // brighten the freshly-swept band
-      ctx.fillStyle=pal[clamp(b*15|0,0,15)];
-      ctx.fillRect(PADx+i*cw,PADt+j*ch,cw+0.6,ch+0.6);
+    const sx0=PADx, sy0=PADt, sx1=PADx+FW, sy1=PADt+FH;
+
+    const radarGreen=(level,alpha)=>{
+      const v=clamp(level,0,1);
+      const r=Math.round(8+92*v), g=Math.round(38+205*v), b=Math.round(18+92*v);
+      return 'rgba('+r+','+g+','+b+','+((alpha==null)?1:alpha).toFixed(3)+')';
+    };
+    const worldAt=(sx,sy)=>{
+      const right=(sx-ownX)/scaleX;
+      const fwd=(ownY-sy)/scaleY;
+      return {x:ac.pos.x+sn*fwd+cs*right, y:ac.pos.y+cs*fwd-sn*right, fwd, right};
+    };
+    const plot=(wx,wy)=>{
+      const dx=wx-ac.pos.x, dy=wy-ac.pos.y;
+      const fwd=dx*sn+dy*cs, right=dx*cs-dy*sn;
+      return { sx:ownX+right*scaleX, sy:ownY-fwd*scaleY, fwd, right, d:Math.hypot(dx,dy)/NM };
+    };
+    const inF=p=> p.sx>=sx0&&p.sx<=sx1&&p.sy>=sy0&&p.sy<=sy1&&p.fwd>=-maxBack&&p.fwd<=maxF;
+    const drawPoly=(pts,stroke,width,closed)=>{
+      if(!pts||pts.length<2) return;
+      ctx.strokeStyle=stroke; ctx.lineWidth=width||1; ctx.beginPath(); let started=false;
+      for(const pt of pts){ const p=plot(pt.x,pt.y); if(!inF(p)){ started=false; continue; }
+        if(!started){ ctx.moveTo(p.sx,p.sy); started=true; } else ctx.lineTo(p.sx,p.sy); }
+      if(closed&&started) ctx.closePath(); ctx.stroke();
+    };
+
+    ctx.fillStyle='#001007'; ctx.fillRect(0,0,W,H);
+    ctx.save(); ctx.beginPath(); ctx.rect(sx0,sy0,FW,FH); ctx.clip();
+    ctx.fillStyle='rgba(0,20,8,0.92)'; ctx.fillRect(sx0,sy0,FW,FH);
+
+    // Range grid is anchored on ownship, giving a clear reference frame.
+    ctx.strokeStyle='rgba(80,255,130,0.17)'; ctx.lineWidth=1;
+    for(let rn=0.25; rn<=1.0; rn+=0.25){
+      const y=ownY-(maxF*rn)*scaleY;
+      ctx.beginPath(); ctx.moveTo(sx0,y); ctx.lineTo(sx1,y); ctx.stroke();
+      ctx.fillStyle='rgba(130,255,160,0.32)'; ctx.font='7px "Courier New"'; ctx.textAlign='right';
+      ctx.fillText(Math.round(rangeNM*rn)+'', sx1-4, y-2);
     }
-    const plot=(wx,wy)=>{ const dx=wx-ctr.x,dy=wy-ctr.y; const rx=dx*cs+dy*sn, ry=dx*(-sn)+dy*cs;
-      return { sx:cx0+(rx/half2)*FW, sy:cy0-(ry/half2)*FH }; };
-    const inF=p=> p.sx>=PADx&&p.sx<=PADx+FW&&p.sy>=PADt&&p.sy<=PADt+FH;
-    const recency=(p,o)=>{ if(Math.abs(p.sy-sweepY)<5) o._gmtT=world.t; return clamp(1-(world.t-(o._gmtT||-99))/2.0,0.2,1); };
+    for(let s=-0.5; s<=0.5; s+=0.25){
+      const x=ownX+s*FW*0.92; ctx.beginPath(); ctx.moveTo(x,sy0); ctx.lineTo(x,sy1); ctx.stroke();
+    }
+    ctx.strokeStyle='rgba(140,255,170,0.24)'; ctx.beginPath(); ctx.moveTo(ownX,sy0); ctx.lineTo(ownX,sy1); ctx.stroke();
+
+    // Per-cell SAR return: local elevation + slope + forward aspect. This gives
+    // visible geography instead of the older confusing patch frame.
+    const NX=58, NY=48, cw=FW/NX, ch=FH/NY;
+    const sweep=(world.t*0.44)%1, sweepY=sy0+sweep*FH;
+    for(let j=0;j<NY;j++) for(let i=0;i<NX;i++){
+      const sx=sx0+(i+0.5)*cw, sy=sy0+(j+0.5)*ch;
+      const q=worldAt(sx,sy);
+      if(q.fwd<-maxBack || q.fwd>maxF || Math.abs(q.right)>side) continue;
+      const h=terrainH(q.x,q.y);
+      const wInfo=(typeof terrainWaterInfo==='function')?terrainWaterInfo(q.x,q.y):null;
+      const dS=420;
+      const hx=terrainH(q.x+dS,q.y)-terrainH(q.x-dS,q.y);
+      const hy=terrainH(q.x,q.y+dS)-terrainH(q.x,q.y-dS);
+      const slope=clamp(Math.hypot(hx,hy)/1700,0,1);
+      const relief=clamp(h/Math.max(1,pk),0,1);
+      const ahead=clamp(q.fwd/maxF,0,1);
+      const aspect=clamp((terrainH(q.x+sn*dS,q.y+cs*dS)-terrainH(q.x-sn*dS,q.y-cs*dS))/700,0,1);
+      let b=0.10 + relief*0.34 + slope*0.34 + aspect*0.18;
+      if(wInfo) b=0.075 + (1-(wInfo.edge||0))*0.055;   // water/cool channels: dark but visible
+      if(q.fwd<0) b*=0.55;
+      const noise=((((i*17+j*31+Math.floor(world.t*8))&15)/15)-0.5)*0.055;
+      const pass=Math.abs((sy-sweepY)/FH); const sweepBoost=Math.max(0,1-pass*9)*0.16;
+      ctx.fillStyle=radarGreen(clamp(b+noise+sweepBoost,0.045,0.94),0.86);
+      ctx.fillRect(sx0+i*cw, sy0+j*ch, cw+0.7, ch+0.7);
+    }
+
+    // Ridge/valley detail: subtle contour-like SAR edge flashes without turning
+    // the page into a topographic map.
+    ctx.strokeStyle='rgba(180,255,190,0.14)'; ctx.lineWidth=0.8;
+    for(let y=sy0+8;y<sy1-4;y+=11){
+      ctx.beginPath(); let started=false;
+      for(let x=sx0+2;x<=sx1-2;x+=8){
+        const q=worldAt(x,y), h=terrainH(q.x,q.y), n=terrainH(q.x+360,q.y+360);
+        if(Math.abs(h-n)<42){ if(!started){ctx.moveTo(x,y); started=true;} else ctx.lineTo(x,y); }
+        else started=false;
+      }
+      ctx.stroke();
+    }
+
+    // Water and infrastructure overlays are dark/bright references for geography.
+    if(typeof _riverCenterX==='function'){
+      const pts=[];
+      for(let k=-20;k<=120;k++){ const yy=ac.pos.y + (k/100)*maxF*1.25; pts.push({x:_riverCenterX(yy),y:yy}); }
+      drawPoly(pts,'rgba(30,150,80,0.72)',2.0,false);
+    }
+    const tf=(typeof TERRAIN_FEATURES!=='undefined')?TERRAIN_FEATURES:null;
+    if(tf&&Number.isFinite(tf.lakeX)&&Number.isFinite(tf.lakeY)){
+      const pts=[], r=tf.lakeR||1400;
+      for(let k=0;k<=64;k++){ const a=k/64*Math.PI*2; pts.push({x:tf.lakeX+Math.cos(a)*r,y:tf.lakeY+Math.sin(a)*r}); }
+      drawPoly(pts,'rgba(35,160,86,0.58)',1.4,true);
+    }
+    const inf=(world&&world.infrastructure)||{};
+    for(const rd of (inf.roads||[])) drawPoly(rd.pts||[],'rgba(185,255,170,0.34)',1.1,false);
+    for(const pl of (inf.powerlines||[])) drawPoly([pl.a,pl.b],'rgba(210,255,185,0.26)',0.9,false);
+    ctx.strokeStyle='rgba(225,255,190,0.62)'; ctx.lineWidth=1.3;
+    for(const br of (inf.bridges||[])){
+      const len=br.len||420, hd=br.hdg||0, si=Math.sin(hd), co=Math.cos(hd);
+      const a=plot(br.x-si*len/2, br.y-co*len/2), b=plot(br.x+si*len/2, br.y+co*len/2);
+      if(inF(a)&&inF(b)){ ctx.beginPath(); ctx.moveTo(a.sx,a.sy); ctx.lineTo(b.sx,b.sy); ctx.stroke(); }
+    }
+
+    // Ownship trail in world space proves the SAR frame is moving/rotating with aircraft.
+    if(!this._sarOwnTrail) this._sarOwnTrail=[];
+    const tr=this._sarOwnTrail;
+    if(!tr.length || Math.hypot(tr[tr.length-1].x-ac.pos.x,tr[tr.length-1].y-ac.pos.y)>350){ tr.push({x:ac.pos.x,y:ac.pos.y,t:world.t}); if(tr.length>28) tr.shift(); }
+    ctx.strokeStyle='rgba(190,255,170,0.45)'; ctx.lineWidth=1; ctx.beginPath(); let began=false;
+    for(const t of tr){ const p=plot(t.x,t.y); if(!inF(p)) continue; if(!began){ctx.moveTo(p.sx,p.sy); began=true;} else ctx.lineTo(p.sx,p.sy); }
+    if(began) ctx.stroke();
+
     const hits=[];
+    const recency=(p,o)=>{ if(Math.abs(p.sy-sweepY)<5) o._gmtT=world.t; return clamp(1-(world.t-(o._gmtT||-99))/2.0,0.2,1); };
     // strike-target buildings — fixed bright returns
     if (!world.target.destroyed){
       for (const bd of world.target.buildings){ if(bd.destroyed)continue; const p=plot(bd.x,bd.y); if(!inF(p))continue;
@@ -492,54 +578,51 @@ PAGES.FCR={
         hits.push({sx:p.sx,sy:p.sy,obj:bd,name:bd.label||'TGT'});
       }
     }
-    // underground facilities — SAR-only returns (hollow diamond; red if armed)
     for (const st of world.structures){ if(st.destroyed)continue; const p=plot(st.x,st.y); if(!inF(p))continue;
-      ctx.globalAlpha=recency(p,st);
-      ctx.strokeStyle=st.hostile?C_RED:'#7fe0ff'; ctx.lineWidth=1.2;
+      ctx.globalAlpha=recency(p,st); ctx.strokeStyle=st.hostile?C_RED:'#7fe0ff'; ctx.lineWidth=1.2;
       ctx.beginPath(); ctx.moveTo(p.sx,p.sy-6); ctx.lineTo(p.sx+6,p.sy); ctx.lineTo(p.sx,p.sy+6); ctx.lineTo(p.sx-6,p.sy); ctx.closePath(); ctx.stroke();
       ctx.fillStyle=st.hostile?C_RED:'#7fe0ff'; ctx.font='7px "Courier New"'; ctx.textAlign='left'; ctx.fillText('UGF',p.sx+8,p.sy+2);
       ctx.globalAlpha=1; hits.push({sx:p.sx,sy:p.sy,obj:st,name:st.name});
     }
-    // HVTs
     for (const v of world.hvts){ if(v.destroyed)continue; const p=plot(v.x,v.y); if(!inF(p))continue;
       ctx.fillStyle=C_HOT; ctx.fillRect(p.sx-2,p.sy-2,5,5); ctx.strokeStyle=C_HOT; ctx.lineWidth=1; ctx.strokeRect(p.sx-5,p.sy-5,10,10);
       hits.push({sx:p.sx,sy:p.sy,obj:v,name:v.name}); }
-    // GMT — moving vehicles + mobile TELs, with track history + velocity leader
     for (const gm of world.groundMovers){ if(gm.destroyed||gm.underground)continue; const p=plot(gm.x,gm.y); if(!inF(p))continue;
       if (gm.track&&gm.track.length>1){ ctx.strokeStyle='rgba(255,200,120,0.35)'; ctx.lineWidth=1; ctx.beginPath();
-        gm.track.forEach((t,i)=>{ const q=plot(t.x,t.y); if(i===0)ctx.moveTo(q.sx,q.sy); else ctx.lineTo(q.sx,q.sy); }); ctx.stroke(); }
-      ctx.globalAlpha=recency(p,gm);
-      const tel=gm.kind==='TEL';
+        let first=true; gm.track.forEach(t=>{ const q=plot(t.x,t.y); if(!inF(q))return; if(first){ctx.moveTo(q.sx,q.sy); first=false;} else ctx.lineTo(q.sx,q.sy); }); if(!first)ctx.stroke(); }
+      ctx.globalAlpha=recency(p,gm); const tel=gm.kind==='TEL';
       ctx.fillStyle=tel?'#ff7a4d':'#ffd9a8'; ctx.fillRect(p.sx-3,p.sy-3,6,6);
       ctx.strokeStyle=tel?C_RED:C_ORG; ctx.lineWidth=1; ctx.strokeRect(p.sx-4,p.sy-4,8,8);
       const lead=plot(gm.x+Math.sin(gm.psi)*220, gm.y+Math.cos(gm.psi)*220);
-      ctx.beginPath(); ctx.moveTo(p.sx,p.sy); ctx.lineTo(lead.sx,lead.sy); ctx.stroke();
-      ctx.globalAlpha=1;
+      ctx.beginPath(); ctx.moveTo(p.sx,p.sy); ctx.lineTo(lead.sx,lead.sy); ctx.stroke(); ctx.globalAlpha=1;
       if (tel){ ctx.fillStyle=C_RED; ctx.font='7px "Courier New"'; ctx.textAlign='left'; ctx.fillText('TEL',p.sx+6,p.sy-4); }
       hits.push({sx:p.sx,sy:p.sy,obj:gm,name:gm.name});
     }
     m._sarHits=hits;
-    // designation box on the locked contact
     if (world.gndLock && !world.gndLock.destroyed){ const p=plot(world.gndLock.x,world.gndLock.y);
       if (inF(p)){ ctx.strokeStyle=C_HOT; ctx.lineWidth=1.5; ctx.strokeRect(p.sx-9,p.sy-9,18,18);
         ctx.fillStyle=C_HOT; ctx.font='8px "Courier New"'; ctx.textAlign='left'; ctx.fillText('DESIG',p.sx+11,p.sy+3); } }
-    // sweep line + frame
-    ctx.strokeStyle='rgba(120,255,150,0.9)'; ctx.lineWidth=1.5;
-    ctx.beginPath(); ctx.moveTo(PADx,sweepY); ctx.lineTo(PADx+FW,sweepY); ctx.stroke();
-    ctx.strokeStyle=C_GREEN; ctx.lineWidth=1; ctx.strokeRect(PADx,PADt,FW,FH);
-    // header / labels
+
+    // Sweep line + ownship symbol
+    ctx.strokeStyle='rgba(120,255,150,0.92)'; ctx.lineWidth=1.4;
+    ctx.beginPath(); ctx.moveTo(sx0,sweepY); ctx.lineTo(sx1,sweepY); ctx.stroke();
+    ctx.strokeStyle=C_HOT; ctx.fillStyle='rgba(168,255,192,0.10)'; ctx.lineWidth=1.4;
+    ctx.beginPath(); ctx.moveTo(ownX,ownY-13); ctx.lineTo(ownX+9,ownY+8); ctx.lineTo(ownX,ownY+4); ctx.lineTo(ownX-9,ownY+8); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=C_HOT; ctx.font='7px "Courier New"'; ctx.textAlign='center'; ctx.fillText('OWN',ownX,ownY+20);
+    ctx.restore();
+
+    ctx.strokeStyle=C_GREEN; ctx.lineWidth=1; ctx.strokeRect(sx0,sy0,FW,FH);
     ctx.fillStyle=C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left';
     ctx.fillText('FCR SAR/GMT', 6, 14);
-    ctx.textAlign='right'; ctx.fillText('A'+m.range, W-6, 14);
+    ctx.textAlign='right'; ctx.fillText('R'+rangeNM+'  TRK-UP', W-6, 14);
     ctx.textAlign='center'; ctx.font='9px "Courier New"';
-    ctx.fillText('GND MAP  '+(halfNM*2).toFixed(0)+'NM', W/2, PADt-6);
-    const sr=distTo(ctr.x,ctr.y)/NM;
-    ctx.textAlign='left'; ctx.fillText('SR '+sr.toFixed(1)+'NM', PADx, PADt+FH+14);
+    ctx.fillText('OWNSHIP REF  TERRAIN/GMT', W/2, PADt-6);
+    const hdg=((ac.psi*180/Math.PI)%360+360)%360;
+    ctx.textAlign='left'; ctx.fillText('HDG '+String(Math.round(hdg)).padStart(3,'0'), PADx, PADt+FH+14);
     const ntrk=world.groundMovers.filter(g=>!g.destroyed&&!g.underground).length;
-    ctx.textAlign='right'; ctx.fillText('GMT TRK '+ntrk, PADx+FW, PADt+FH+14);
+    ctx.textAlign='right'; ctx.fillText('GMT '+ntrk+'  TAP=DESIG', PADx+FW, PADt+FH+14);
   }
 };
-
 /* ---------- HSD : top-down track-up map (same world) ---------- */
 PAGES.HSD={
   render(m,ctx){
