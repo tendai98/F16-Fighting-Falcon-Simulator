@@ -2,7 +2,7 @@
    REPLAY STORAGE — IndexedDB metadata/data split, localStorage fallback
    ---------------------------------------------------------------------
    Scoreboard listing reads compact metadata only. Full replay payloads are
-   loaded only when Watch is selected, which keeps the replay list fast and
+   fetched lazily so the replay list stays fast and
    reduces memory pressure from large mission logs.
    ===================================================================== */
 var ReplaySettings={

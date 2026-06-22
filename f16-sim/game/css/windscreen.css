@@ -453,3 +453,30 @@ body { padding: 0; overflow: hidden; }
   #game-ui .replay-table{ font-size:10px; }
   #game-ui .replay-table th:nth-child(4),#game-ui .replay-table td:nth-child(4),#game-ui .replay-table th:nth-child(7),#game-ui .replay-table td:nth-child(7){ display:none; }
 }
+
+/* ---- polished Flight School lesson list scrollbars ---- */
+#lesson-menu .lm-card{overflow:hidden;}
+#lesson-menu .lm-list{
+  max-height:min(58vh,520px);
+  overflow-y:auto;
+  padding-right:8px;
+  scrollbar-width:thin;
+  scrollbar-color:#39ff6e rgba(0,18,8,.82);
+}
+#lesson-menu .lm-list::-webkit-scrollbar{width:11px;}
+#lesson-menu .lm-list::-webkit-scrollbar-track{
+  background:linear-gradient(180deg,rgba(0,18,8,.95),rgba(0,9,4,.95));
+  border:1px solid rgba(91,255,155,.18);
+  border-radius:12px;
+  box-shadow:inset 0 0 8px rgba(33,255,91,.08);
+}
+#lesson-menu .lm-list::-webkit-scrollbar-thumb{
+  background:linear-gradient(180deg,#7cff9a,#1ba84d 48%,#0d5f2f);
+  border:2px solid rgba(0,16,7,.96);
+  border-radius:12px;
+  box-shadow:0 0 10px rgba(57,255,110,.28),inset 0 0 8px rgba(230,255,236,.24);
+}
+#lesson-menu .lm-list::-webkit-scrollbar-thumb:hover{
+  background:linear-gradient(180deg,#d5ffe0,#39ff6e 48%,#17843f);
+}
+@media (max-height:720px){#lesson-menu .lm-list{max-height:52vh;}}

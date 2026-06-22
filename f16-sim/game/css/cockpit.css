@@ -582,3 +582,38 @@ body[data-game-mode="ACTIVE_MISSION"] #game-ui,body[data-game-mode="FLIGHT_SCHOO
   #game-ui .replay-restart,.replay-restart{top:42px;}
   #game-ui .replay-exit,.replay-exit{top:78px;}
 }
+
+/* ---- polished mission/replay scrollbars ---- */
+#game-ui .game-card,
+#game-ui .replay-table-wrap,
+#modal-browser .replay-table-wrap{
+  scrollbar-width:thin;
+  scrollbar-color:#39ff6e rgba(0,18,8,.82);
+}
+#game-ui .game-card::-webkit-scrollbar,
+#game-ui .replay-table-wrap::-webkit-scrollbar,
+#modal-browser .replay-table-wrap::-webkit-scrollbar{width:11px;height:11px;}
+#game-ui .game-card::-webkit-scrollbar-track,
+#game-ui .replay-table-wrap::-webkit-scrollbar-track,
+#modal-browser .replay-table-wrap::-webkit-scrollbar-track{
+  background:linear-gradient(180deg,rgba(0,18,8,.95),rgba(0,9,4,.95));
+  border:1px solid rgba(91,255,155,.18);
+  border-radius:12px;
+  box-shadow:inset 0 0 8px rgba(33,255,91,.08);
+}
+#game-ui .game-card::-webkit-scrollbar-thumb,
+#game-ui .replay-table-wrap::-webkit-scrollbar-thumb,
+#modal-browser .replay-table-wrap::-webkit-scrollbar-thumb{
+  background:linear-gradient(180deg,#7cff9a,#1ba84d 48%,#0d5f2f);
+  border:2px solid rgba(0,16,7,.96);
+  border-radius:12px;
+  box-shadow:0 0 10px rgba(57,255,110,.28),inset 0 0 8px rgba(230,255,236,.24);
+}
+#game-ui .game-card::-webkit-scrollbar-thumb:hover,
+#game-ui .replay-table-wrap::-webkit-scrollbar-thumb:hover,
+#modal-browser .replay-table-wrap::-webkit-scrollbar-thumb:hover{
+  background:linear-gradient(180deg,#d5ffe0,#39ff6e 48%,#17843f);
+}
+#game-ui .game-card::-webkit-scrollbar-corner,
+#game-ui .replay-table-wrap::-webkit-scrollbar-corner,
+#modal-browser .replay-table-wrap::-webkit-scrollbar-corner{background:rgba(0,9,4,.95);}
