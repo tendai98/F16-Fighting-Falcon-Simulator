@@ -17,6 +17,77 @@ const GUN_MAX_RANGE = 2850;      // playable LCOS envelope; red cue uses stricte
 const GUN_HARD_KILL_RANGE = 2300; // damage / pipper confidence is strongest inside this range
 const GUN_DISPLAY_RANGE = 4.0 * NM; // show LCOS early so pilots can work into the envelope
 
+
+/* ---------- enemy defensive tuning ----------
+   Bandits should defend intelligently without feeling like they have infinite,
+   perfectly-timed countermeasures.  These values intentionally create quiet
+   gaps and second-shot opportunities while keeping HARD / ACE / AIR SUPER
+   maneuver defense threatening. */
+const BANDIT_CM_BY_LEVEL = [
+  { flares:3,  chaff:2 },  // Level 1 EASY
+  { flares:5,  chaff:3 },  // Level 2 NORMAL
+  { flares:7,  chaff:4 },  // Level 3 HARD
+  { flares:9,  chaff:5 },  // Level 4 ACE
+  { flares:11, chaff:6 }   // Level 5 AIR SUPER
+];
+const BANDIT_REACTION_BY_LEVEL = [
+  { chance:0.50, delayMin:0.90, delayMax:1.60 },
+  { chance:0.65, delayMin:0.70, delayMax:1.30 },
+  { chance:0.76, delayMin:0.50, delayMax:1.05 },
+  { chance:0.84, delayMin:0.35, delayMax:0.85 },
+  { chance:0.88, delayMin:0.25, delayMax:0.70 }
+];
+const BANDIT_CM_BURST = {
+  flareMin:1, flareMax:2,
+  chaffMin:1, chaffMax:2,
+  flareCooldownMin:3.0, flareCooldownMax:5.0,
+  chaffCooldownMin:3.5, chaffCooldownMax:5.5,
+  quietMin:2.2, quietMax:4.0
+};
+function randBandit(min,max){ return min + Math.random()*(max-min); }
+function missileId(m){ return m && (m.id || m._cmId || (m._cmId='msl_'+Math.random().toString(36).slice(2,8))); }
+function classifyBanditThreat(m){
+  if (!m) return null;
+  if (isIrMissile(m)) return 'IR';
+  if (isRadarMissile(m) || m.kind==='SAM') return 'RADAR';
+  return 'UNKNOWN';
+}
+function ensureBanditDefense(bd){
+  if (!bd) return null;
+  const diff = clamp(world.difficulty||0,0,BANDIT_CM_BY_LEVEL.length-1);
+  const inv = BANDIT_CM_BY_LEVEL[diff] || BANDIT_CM_BY_LEVEL[1];
+  if (!bd.defense){
+    const flares = (bd.cmFlares!==undefined) ? Math.max(0, bd.cmFlares|0) : inv.flares;
+    const chaff  = (bd.cmChaff !==undefined) ? Math.max(0, bd.cmChaff |0) : inv.chaff;
+    bd.defense = {
+      flares, chaff,
+      nextFlareTime:0, nextChaffTime:0, nextDefenseThinkTime:0, quietUntil:0,
+      defendingUntil:0, currentThreatId:null, lastThreatType:null,
+      reactionPending:false, reactionAt:0, reactionThreatId:null,
+      postDefenseVulnerableUntil:0, panic:0
+    };
+    bd.cmFlares = flares; bd.cmChaff = chaff;
+  }
+  return bd.defense;
+}
+function syncBanditDefenseCounters(bd){
+  if (!bd || !bd.defense) return;
+  bd.cmFlares = Math.max(0, bd.defense.flares|0);
+  bd.cmChaff = Math.max(0, bd.defense.chaff|0);
+}
+function isThreatDangerousToBandit(bd, missile){
+  if (!bd || !missile || missile.team!=='BLUE' || missile.dead || missile.done || missile.groundPos) return false;
+  if (missile.tgt && missile.tgt!==bd) return false;
+  const bp = banditPos(bd), mp = missile.pos || v3(0,0,0);
+  const rel = vsub(bp,mp), d = vlen(rel);
+  if (d > 9000) return false;
+  const mv = missile.vel || vsub(bp,mp);
+  const closing = vdot(vnorm(mv), vnorm(rel)) * (missile.spd || vlen(mv));
+  if (d > 2500 && closing < 70) return false;
+  if ((missile.energy!==undefined && missile.energy < 0.16) && d > 1800) return false;
+  return true;
+}
+
 function ensureCombatArrays(){
   if (!world.bullets) world.bullets=[];
   if (!world.decoys) world.decoys=[];
@@ -107,9 +178,12 @@ function chooseDecoyTarget(m, targetObj, tgtPos, notch){
     if (score>bestScore){ bestScore=score; best=d; }
   }
   if (best){
-    const base = seeker==='flare' ? 0.45 : 0.24 + 0.46*notch;
-    const quality=clamp(bestScore*base*(m.t<1.0?0.35:1.0),0,0.78);
-    if (Math.random()<quality){ m.decoyId=best.id; m._seekerDriftT=0.35+Math.random()*0.55; return best.pos; }
+    // Countermeasures help, but should not become a guaranteed spoof.  Lower
+    // base/cap values preserve missile kills after good launch geometry and
+    // make second shots matter once the bandit has burned a defensive burst.
+    const base = seeker==='flare' ? 0.26 : 0.18 + 0.22*notch;
+    const quality=clamp(bestScore*base*(m.t<1.0?0.28:1.0),0,0.44);
+    if (Math.random()<quality){ m.decoyId=best.id; m._seekerDriftT=0.30+Math.random()*0.48; return best.pos; }
   }
   return null;
 }
@@ -730,52 +804,102 @@ function banditAltitudeToward(bd, targetAlt, dt){
 function incomingMissileForBandit(bd){
   let best=null, bestScore=0;
   for (const m of world.sams){
-    if (!m || m.team!=='BLUE' || m.groundPos || m.tgt!==bd) continue;
+    if (!isThreatDangerousToBandit(bd,m)) continue;
     const mp=m.pos||v3(0,0,0), bp=banditPos(bd);
-    const d=vlen(vsub(mp,bp));
-    const closing=vdot(vnorm(m.vel||vsub(bp,mp)), vnorm(vsub(bp,mp)))*(m.spd||vlen(m.vel||v3()));
-    if (d>13000 || closing<80) continue;
-    const score=(13000-d)/13000 + closing/900;
+    const rel=vsub(bp,mp), d=vlen(rel);
+    const mv=m.vel||vsub(bp,mp);
+    const closing=vdot(vnorm(mv), vnorm(rel))*(m.spd||vlen(mv)||600);
+    const tti=d/Math.max(280, m.spd||vlen(mv)||600);
+    const energy=(m.energy===undefined)?1:m.energy;
+    const score=(9000-d)/9000 + clamp(closing/900,0,1.2) + clamp((6.5-tti)/6.5,0,1) + energy*0.35;
     if(score>bestScore){bestScore=score;best=m;}
   }
   return best;
 }
-function banditDropDefensive(bd, threat){
-  const diff=world.difficulty||0;
-  if (diff<2 || !threat) return;
-  if (bd.cmFlares===undefined){
-    const base=[0,0,3,5,4][diff] || 3;
-    bd.cmFlares = base + Math.floor(Math.random()*2);
-    bd.cmChaff  = base + 1 + Math.floor(Math.random()*3);
-    bd._cmSkill = clamp(([0,0,0.56,0.70,0.62][diff]||0.55) + (Math.random()-0.5)*0.18, 0.35, 0.84);
-  }
-  const radar=isRadarMissile(threat), ir=isIrMissile(threat);
-  const d=vlen(vsub(threat.pos, banditPos(bd)));
-  if (d>12000) return;
-  const tti = d / Math.max(260, threat.spd || vlen(threat.vel||v3(0,0,0)) || 600);
-  // Delayed / imperfect reactions make missile shots scoreable.  The bandit sets
-  // a reaction clock for each inbound missile; some react late, some not at all.
-  const tid = threat.id || threat._cmId || (threat._cmId = 'msl_'+Math.random().toString(36).slice(2,8));
-  if (bd._cmThreatId !== tid){
-    bd._cmThreatId = tid;
-    bd._cmWillReact = Math.random() < bd._cmSkill;
-    bd._cmReactAt = world.t + (diff>=3 ? (0.35+Math.random()*1.25) : (0.75+Math.random()*1.75));
-    if (diff>=4) bd._cmReactAt += Math.random()*0.45; // level 5 keeps the fight fair, not invincible
-  }
-  if (!bd._cmWillReact || world.t < bd._cmReactAt) return;
-  const cool=diff>=3?1.10:1.55;
-  if (world.t-(bd._lastCm||-99)<cool) return;
-  if (tti > 8.0 && d>7000) return;
-  let flareCount = ir ? Math.min(bd.cmFlares||0, diff>=3?3:2) : Math.min(bd.cmFlares||0, 1);
-  let chaffCount = radar ? Math.min(bd.cmChaff||0, diff>=3?4:3) : Math.min(bd.cmChaff||0, 1);
-  if (flareCount<=0 && chaffCount<=0) return;
-  bd.cmFlares -= flareCount; bd.cmChaff -= chaffCount; bd._lastCm=world.t;
+function maybeDeployBanditFlares(bd, now, force){
+  const d=ensureBanditDefense(bd); if(!d || d.flares<=0) return 0;
+  if (!force && now < d.nextFlareTime) return 0;
+  const count=Math.min(d.flares, Math.floor(randBandit(BANDIT_CM_BURST.flareMin, BANDIT_CM_BURST.flareMax+0.999)));
+  if (count<=0) return 0;
   const f={x:Math.sin(bd.psi||0),y:Math.cos(bd.psi||0),z:0};
   const v=banditVel(bd);
   const pos={x:bd.x-f.x*22,y:bd.y-f.y*22,z:bd.alt-3};
-  dropCountermeasureBurst(pos, vadd(v, vscale(f,-175)), 'RED', {flares:flareCount, chaff:chaffCount});
-  addEffect(pos, 0.42, 'launch');
-  if (window.recordMissionEvent) recordMissionEvent('countermeasure', { team:'RED', actor:bd.id||null, flares:flareCount, chaff:chaffCount, remainFlares:bd.cmFlares, remainChaff:bd.cmChaff });
+  dropCountermeasureBurst(pos, vadd(v, vscale(f,-175)), 'RED', {flares:count, chaff:0});
+  addEffect(pos, 0.34, 'launch');
+  d.flares-=count; d.nextFlareTime=now+randBandit(BANDIT_CM_BURST.flareCooldownMin,BANDIT_CM_BURST.flareCooldownMax);
+  syncBanditDefenseCounters(bd);
+  if (window.recordMissionEvent) recordMissionEvent('countermeasure', { team:'RED', actor:bd.id||null, flares:count, chaff:0, remainFlares:d.flares, remainChaff:d.chaff });
+  return count;
+}
+function maybeDeployBanditChaff(bd, now, force){
+  const d=ensureBanditDefense(bd); if(!d || d.chaff<=0) return 0;
+  if (!force && now < d.nextChaffTime) return 0;
+  const count=Math.min(d.chaff, Math.floor(randBandit(BANDIT_CM_BURST.chaffMin, BANDIT_CM_BURST.chaffMax+0.999)));
+  if (count<=0) return 0;
+  const f={x:Math.sin(bd.psi||0),y:Math.cos(bd.psi||0),z:0};
+  const v=banditVel(bd);
+  const pos={x:bd.x-f.x*20,y:bd.y-f.y*20,z:bd.alt-1};
+  dropCountermeasureBurst(pos, vadd(v, vscale(f,-150)), 'RED', {flares:0, chaff:count});
+  addEffect(pos, 0.28, 'launch');
+  d.chaff-=count; d.nextChaffTime=now+randBandit(BANDIT_CM_BURST.chaffCooldownMin,BANDIT_CM_BURST.chaffCooldownMax);
+  syncBanditDefenseCounters(bd);
+  if (window.recordMissionEvent) recordMissionEvent('countermeasure', { team:'RED', actor:bd.id||null, flares:0, chaff:count, remainFlares:d.flares, remainChaff:d.chaff });
+  return count;
+}
+function scheduleBanditDefense(bd, missile, now, levelIndex){
+  const d=ensureBanditDefense(bd); if(!d || !missile) return;
+  const tid=missileId(missile);
+  if (d.reactionPending && d.reactionThreatId===tid) return;
+  if (now < d.nextDefenseThinkTime || now < d.quietUntil) return;
+  if (d.currentThreatId===tid && now < d.defendingUntil) return;
+  const cfg=BANDIT_REACTION_BY_LEVEL[clamp(levelIndex||0,0,BANDIT_REACTION_BY_LEVEL.length-1)] || BANDIT_REACTION_BY_LEVEL[1];
+  let chance=cfg.chance;
+  if (now < (d.postDefenseVulnerableUntil||0)) chance*=0.52; // punishable after first defensive burst
+  if (d.flares<=0 && isIrMissile(missile)) chance*=0.75;
+  if (d.chaff<=0 && isRadarMissile(missile)) chance*=0.75;
+  if (Math.random()>chance){
+    d.nextDefenseThinkTime = now + randBandit(1.5,3.0);
+    d.currentThreatId = tid; // this shot can get through while the pilot missed the cue
+    return;
+  }
+  d.reactionPending=true;
+  d.reactionAt=now+randBandit(cfg.delayMin,cfg.delayMax);
+  if (now < (d.postDefenseVulnerableUntil||0)) d.reactionAt += randBandit(0.45,0.90);
+  d.reactionThreatId=tid;
+}
+function executeBanditDefense(bd, missile, now, levelIndex){
+  const d=ensureBanditDefense(bd); if(!d || !missile) return;
+  const tid=missileId(missile);
+  d.reactionPending=false;
+  d.currentThreatId=tid;
+  d.lastThreatType=classifyBanditThreat(missile);
+  d.defendingUntil=now+randBandit(2.5,5.0);
+  d.quietUntil=now+randBandit(BANDIT_CM_BURST.quietMin,BANDIT_CM_BURST.quietMax);
+  d.nextDefenseThinkTime=now+randBandit(0.8,1.8);
+  d.postDefenseVulnerableUntil=now+randBandit(2.5,4.5);
+  d.panic=clamp((d.panic||0)+0.35,0,1);
+  bd.aiState='EVADE'; bd._stateUntil=d.defendingUntil; bd._evadeDir = bd._evadeDir || (Math.random()<0.5?-1:1);
+  if (d.lastThreatType==='IR'){
+    bd.evasionMode='DRAG_FLARE';
+    maybeDeployBanditFlares(bd, now, true);
+  } else if (d.lastThreatType==='RADAR'){
+    bd.evasionMode='NOTCH_CHAFF';
+    maybeDeployBanditChaff(bd, now, true);
+  } else {
+    bd.evasionMode='BREAK';
+  }
+}
+function banditDropDefensive(bd, threat){
+  const diff=world.difficulty||0;
+  if (diff<2 || !threat) return;
+  const d=ensureBanditDefense(bd); if(!d) return;
+  const now=world.t;
+  const tid=missileId(threat);
+  if (d.reactionPending && d.reactionThreatId===tid && now>=d.reactionAt){
+    executeBanditDefense(bd, threat, now, diff);
+    return;
+  }
+  scheduleBanditDefense(bd, threat, now, diff);
 }
 function banditTargetState(bd, rng, verticalAbs){
   const now = world.t;
@@ -810,8 +934,9 @@ function updateBandits(dt){
       const missileThreat = incomingMissileForBandit(bd);
       if (missileThreat){ bd._defThreat=missileThreat; banditDropDefensive(bd, missileThreat); }
       if (!bd.aiState) bd.aiState = 'INTERCEPT';
-      if (missileThreat && bd.aiState!=='EVADE'){
-        bd.aiState='EVADE'; bd._stateUntil=world.t + 4.5 + Math.random()*2.5; bd._evadeDir = Math.random()<0.5?-1:1;
+      const activeDefense = !!(missileThreat && bd.defense && bd.defense.currentThreatId===missileId(missileThreat) && world.t < bd.defense.defendingUntil);
+      if (activeDefense && bd.aiState!=='EVADE'){
+        bd.aiState='EVADE'; bd._stateUntil=bd.defense.defendingUntil; bd._evadeDir = bd._evadeDir || (Math.random()<0.5?-1:1);
       } else if ((range2 < 1300 || (range2 < 3400 && Math.abs(dz)>2300)) && bd.aiState!=='EXTEND'){
         bd.aiState='EXTEND'; bd._stateUntil=world.t + 4.0 + Math.random()*2.5; bd._extendPsi = away + (Math.random()*0.5-0.25);
       } else if ((bd.aiState==='EXTEND' || bd.aiState==='EVADE') && world.t > (bd._stateUntil||0)){
