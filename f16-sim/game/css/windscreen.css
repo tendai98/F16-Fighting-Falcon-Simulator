@@ -480,3 +480,15 @@ body { padding: 0; overflow: hidden; }
   background:linear-gradient(180deg,#d5ffe0,#39ff6e 48%,#17843f);
 }
 @media (max-height:720px){#lesson-menu .lm-list{max-height:52vh;}}
+
+/* copyright signature */
+.ui-copy{
+  margin-top:14px;
+  text-align:center;
+  font-family:'Courier New',monospace;
+  font-size:11px;
+  letter-spacing:2px;
+  color:#7fffa6;
+  text-shadow:0 0 8px rgba(39,255,94,0.45);
+  opacity:.9;
+}

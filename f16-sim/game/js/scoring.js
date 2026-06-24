@@ -4,7 +4,6 @@
 (function(){
   'use strict';
 
-  const LEVEL_MULT = [2.00, 3.00, 4.00, 5.00, 6.00];
   function rt(v){ return Math.round((Number(v)||0)*100)/100; }
   function wpNow(){ return (typeof curWP === 'function') ? curWP() : null; }
 
@@ -25,7 +24,6 @@
         flareCount:0,
         ecmUseSec:0,
         damage:0,
-        penalties:0,
         lastWeapon:''
       };
       this.lastScore = null;
@@ -73,7 +71,6 @@
     },
     penalty(points, reason, silent){
       if(!this.data) this.reset();
-      this.data.penalties += Math.abs(points || 0);
       this._emit('penalty', { points:Math.abs(points || 0), reason:reason || '' }, silent);
     },
     kill(kind, weapon, opts, silent){
@@ -151,22 +148,14 @@
       const shots = d.weapons.filter(w => !/GUN|FLARE/.test(w.weapon)).length;
       const nonGunKills = kills.filter(k => !/GUN/.test(k.weapon)).length;
       const misses = Math.max(0, shots - nonGunKills);
-      let penalties = 0;
-      penalties -= misses * 140;
-      penalties -= Math.max(0, d.flareCount - 8) * 15;
-      penalties -= Math.round(d.ecmUseSec * 1.2);
-      penalties -= Math.round((100 - (world.ac ? world.ac.integrity : 100)) * 8);
-      penalties -= d.penalties;
-      if(outcome !== 'WIN') penalties -= 300;
-      if(/CRASH|TERRAIN|DESTROYED|LANDING|IMPACT/i.test(reason || '')) penalties -= 1200;
-
-      const breakdown = { primaryTargets:primary, secondaryTargets:secondary, enemyAircraft:air, samSites:sam, waypointDiscipline, weaponDiscipline:weaponDisc, takeoff, survival, penalties };
+      // Penalty and difficulty-level multiplier rows were removed from the player-facing score.
+      // Misses, flare use, ECM time and damage remain available in stats, but do not subtract
+      // from the displayed scoreboard total.
+      const breakdown = { primaryTargets:primary, secondaryTargets:secondary, enemyAircraft:air, samSites:sam, waypointDiscipline, weaponDiscipline:weaponDisc, takeoff, survival };
       const raw = Math.max(0, Object.keys(breakdown).reduce((a,k) => a + (breakdown[k] || 0), 0));
-      const levelMultiplier = LEVEL_MULT[world.difficulty || 0] || 1;
       const outcomeMultiplier = outcome === 'WIN' ? 1 : (/CRASH|TERRAIN|DESTROYED|LANDING|IMPACT/i.test(reason || '') ? 0.20 : 0.40);
-      const total = Math.max(0, Math.round(raw * levelMultiplier * outcomeMultiplier));
+      const total = Math.max(0, Math.round(raw * outcomeMultiplier));
       breakdown.raw = raw;
-      breakdown.levelMultiplier = levelMultiplier;
       breakdown.outcomeMultiplier = outcomeMultiplier;
       this.lastScore = { total, breakdown, stats:JSON.parse(JSON.stringify(Object.assign({}, d, { waypoints:Object.values(d.waypoints) }))) };
       return this.lastScore;

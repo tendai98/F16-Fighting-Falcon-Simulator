@@ -64,7 +64,7 @@ let TERRAIN_OFF = { x:0, y:0, s:1 };
 /* structured terrain feature seed.  The renderer uses this so
    low-level routes are repeatable inside one mission/replay instead of pure
    random hill noise. */
-let TERRAIN_FEATURES = { riverPhase:0, gorgePhase:0, ridgePhase:0, lakeX:-7000, lakeY:26000, lakeR:1800 };
+let TERRAIN_FEATURES = { riverPhase:0, gorgePhase:0, ridgePhase:0 };
 /* pads kept flat so these sites stay playable — {x,y,r outer, core inner-flat} */
 let FLAT_SITES = [ {x:0,y:0,r:11000,core:2800}, {x:-3000,y:22000,r:6500,core:1500} ];
 
@@ -89,28 +89,10 @@ function _ridgeSpineX(Y){
 }
 function _gauss(d,w){ return Math.exp(-(d*d)/(2*w*w)); }
 function terrainWaterInfo(X,Y){
-  // Keep takeoff/base and nearby training pads dry.  Water should become a
-  // landscape navigation feature deeper in the combat area, not spawn across
-  // the runway or immediate departure corridor.
-  if (Y < 18000) return null;
-  for (const st of FLAT_SITES){
-    const d = Math.hypot(X-st.x, Y-st.y);
-    if (d < (st.r||0)*0.88) return null;
-  }
-  const rx=_riverCenterX(Y), riverD=Math.abs(X-rx);
-  const f=TERRAIN_FEATURES||{}, lakeD=Math.hypot(X-(f.lakeX||-7000),Y-(f.lakeY||26000));
-  const riverWidth = 140;
-  const lakeR = f.lakeR||1700;
-  const river = riverD < riverWidth;
-  const lake = lakeD < lakeR;
-  if (!river && !lake) return null;
-  const width = lake ? lakeR : riverWidth;
-  const d = lake ? lakeD : riverD;
-  // Water is a flat surface sitting down in the carved channel/depression.
-  // Do not let the water color ride up the terrain sidewalls; the edge value
-  // is only for shoreline fade, not for raising the water as terrain.
-  const level = lake ? 16 : 10;
-  return { water:true, river, lake, edge:clamp(d/Math.max(1,width),0,1), centerX:rx, level };
+  // Water bodies are disabled for performance and readability.  The terrain
+  // still contains dry valleys, basins and gorge channels for low-level route
+  // finding, but no cells are flattened or rendered as water.
+  return null;
 }
 /* ground elevation (m) at world (X east, Y north) — structured mountains with
    valleys, gorges, basins and river channels for low-level ingress. */
@@ -138,11 +120,6 @@ function terrainH(X, Y){
   // steep walls beside the gorge create a tight, readable low-level route
   elev += TERRAIN_PEAK*0.22*_gauss(Math.abs(gorgeD-690), 210);
 
-  // basin/lake depression for navigation and route choices
-  const f=TERRAIN_FEATURES||{};
-  const lakeD=Math.hypot(X-(f.lakeX||-7000),Y-(f.lakeY||26000));
-  elev -= TERRAIN_PEAK*0.30*_gauss(lakeD, (f.lakeR||1800)*1.15);
-
   // flatten pads: fully flat (0) inside `core`, smoothly blend to terrain by `r`
   let flat = 0;
   for (const st of FLAT_SITES){
@@ -152,14 +129,6 @@ function terrainH(X, Y){
     if (ff > flat) flat = ff;
   }
   elev *= (1 - flat);
-  const water=terrainWaterInfo(X,Y);
-  if (water){
-    // A water cell becomes a flat water surface, while adjacent non-water cells
-    // keep the gorge/lake walls. This prevents rivers/lakes looking like a
-    // raised terrain patch on runway-style meshes or sensor feeds.
-    const level = Number.isFinite(water.level) ? water.level : 12;
-    elev = Math.min(elev, level);
-  }
   return Math.max(0,elev);
 }
 
@@ -236,8 +205,8 @@ const world = {
   _reloadCD: 0,       // rearm cooldown so one pass reloads once
   difficulty: 1,      // index into DIFFS (set 0..4)
   quality: 1,         // index into QUALITY_LEVELS (0=LOW,1=MED,2=HIGH)
-  lantirnOn: false,   // legacy replay compatibility only; LANTIRN display removed
-  lantirnMode: 'OFF',  // legacy replay compatibility only
+  lantirnOn: false,   // forward-look FLIR page state (optional / replay-safe)
+  lantirnMode: 'OFF',  // OFF | FLIR — informational state for LANTIRN page
   infrastructure: { bridges:[], roads:[], powerlines:[] },
 
   // ---- in-flight weapons (bombs / missiles) ----
@@ -373,8 +342,7 @@ function reseedTerrain(){
   TERRAIN_FEATURES = {
     riverPhase: (Math.random()*2-1)*50000,
     gorgePhase: (Math.random()*2-1)*50000,
-    ridgePhase: (Math.random()*2-1)*50000,
-    lakeX: rrange(-12000,9000), lakeY: rrange(30000,47000), lakeR: rrange(900,1700)
+    ridgePhase: (Math.random()*2-1)*50000
   };
   world.terrainGen = (world.terrainGen||0) + 1;     // invalidates cached heightfields
 }
@@ -838,7 +806,7 @@ const input = {
 const PITCH_SIGN = 1;
 /* Control smoothing time constant (seconds). Higher = softer / more delayed
    stick response (less twitchy). Lower = sharper. */
-const CTRL_TAU = 0.18;
+const CTRL_TAU = 0.24;
 /* How hard a given bank angle turns the jet (arcade gain over true rate). */
 const TURN_GAIN = 2.6;
 /* smoothed stick state that lags toward `input` so controls aren't instant */
@@ -846,11 +814,11 @@ const ctrl = { pitch:0, roll:0, yaw:0 };
 
 const FM = {
   Vr: 72,            // rotate speed m/s (~140 kt)
-  maxThrust: 28,     // m/s^2 at full AB (arcade)
+  maxThrust: 31,     // m/s^2 at full AB (arcade, stronger low-level acceleration)
   idleThrust: 1.5,
   dragK: 0.00032,    // (legacy, unused by aero model)
-  vMax: 360,         // hard speed ceiling m/s
-  rollRate: 3.85,    // rad/s — sharper dogfight roll authority
+  vMax: 430,         // hard speed ceiling m/s
+  rollRate: 3.35,    // rad/s — smoother low-level / gun tracking roll authority
   pitchRate: 0.95,   // rad/s (legacy)
   yawRate: 0.5,
 };
@@ -862,8 +830,8 @@ const FM = {
    Pulling g costs energy (induced drag), so sustained hard turns bleed speed. */
 const AERO = {
   N_K:    3.05e-4,   // load-factor availability per V^2  (slightly stronger dogfight lift)
-  NMAX:   11.4,      // structural g limit — more agile dogfight pull
-  CD0K:   2.16e-4,   // parasite drag accel = CD0K * V^2
+  NMAX:   10.2,      // structural g limit — strong but less twitchy pitch response
+  CD0K:   1.96e-4,   // parasite drag accel = CD0K * V^2
   IND:    26200,     // induced drag accel = IND * n^2 / V^2
   STALL:  18*DEG,    // AoA at CLmax (display + buffet reference)
   ROT:    11*DEG,    // nose-up rotation AoA on the runway
@@ -893,7 +861,7 @@ function updateFlight(ac, dt){
     ac.phi = lerp(ac.phi, 0, 1-Math.pow(0.001,dt));      // wings level on ground
   } else {
     ac.phi = clamp(ac.phi + ctrl.roll * FM.rollRate * dt, -125*DEG, 125*DEG);
-    if (Math.abs(ctrl.roll) < 0.03) ac.phi = lerp(ac.phi, 0, 1-Math.pow(0.9,dt)); // mostly holds bank
+    if (Math.abs(ctrl.roll) < 0.03) ac.phi = lerp(ac.phi, 0, 1-Math.pow(0.68,dt)); // smoother self-centering bank hold
   }
 
   const thrust = lerp(FM.idleThrust, FM.maxThrust, ac.throttle) * rho;
@@ -932,9 +900,17 @@ function updateFlight(ac, dt){
     /* ---- airborne: load-factor aerodynamics ---- */
     const V  = Math.max(ac.tas, 12);
     const nAvail = clamp(AERO.N_K * V*V * rho, 0.05, AERO.NMAX);            // g the wing can make
-    // commanded load factor from the (smoothed) stick:
-    //   pull (pitchCmd>0): 1g .. NMAX ;  push (pitchCmd<0): down to -1.5g
-    const nCmd = pitchCmd >= 0 ? 1 + pitchCmd*(AERO.NMAX-1) : 1 + pitchCmd*2.5;
+    // commanded load factor from the smoothed stick.  A curved response makes
+    // small gun-run / low-level corrections gentler while preserving full pull.
+    const pitchEff = Math.sign(pitchCmd) * Math.pow(Math.abs(pitchCmd), 1.28);
+    let nCmd = pitchEff >= 0 ? 1 + pitchEff*(AERO.NMAX-1) : 1 + pitchEff*2.2;
+    // Low-level bank assist: when close to terrain and banked without a pitch
+    // command, feed a little extra lift so ordinary turns do not dump altitude.
+    const aglNow = Math.max(0, ac.pos.z-groundElev);
+    const bankAssist = clamp((Math.abs(ac.phi)-8*DEG)/(58*DEG),0,1) *
+                       clamp((720-aglNow)/620,0,1) *
+                       clamp(1-Math.abs(pitchCmd)*1.35,0,1);
+    nCmd += bankAssist*0.78;
     const n = clamp(nCmd, -1.5, nAvail);                             // wing can't exceed nAvail -> stall
     ac.g = n;
     const stalled = (nCmd > nAvail + 0.15);                          // demanding more than the wing can give

@@ -47,6 +47,7 @@ var GameFlow = {
   },
 
   isMissionActive: function(){ return this.state === GAME_STATES.ACTIVE || this.state === GAME_STATES.FLIGHT_SCHOOL; },
+  isTraining: function(){ return this.state === GAME_STATES.FLIGHT_SCHOOL; },
   isActiveMission: function(){ return this.isMissionActive(); },
   isReplay: function(){ return this.state === GAME_STATES.REPLAY_PLAYBACK && window.ReplayPlayback && ReplayPlayback.active; },
 
@@ -70,7 +71,7 @@ var GameFlow = {
     if (typeof removeLessonMenu === 'function') removeLessonMenu();
     if (typeof restartMission === 'function') restartMission();
     if (window.ScoreTracker) ScoreTracker.start();
-    if (window.ReplayRecorder) ReplayRecorder.start();
+    if (window.ReplayRecorder){ if(training) ReplayRecorder.active=false; else ReplayRecorder.start(); }
     world._pendingReplayRecord = null;
     world._pendingReplaySaved = false;
     world.paused = false;
@@ -87,7 +88,7 @@ var GameFlow = {
     this.set(GAME_STATES.FLIGHT_SCHOOL);
     world.paused = false;
     if (window.ScoreTracker) ScoreTracker.start();
-    if (window.ReplayRecorder) ReplayRecorder.start();
+    if (window.ReplayRecorder) ReplayRecorder.active=false;
     world._pendingReplayRecord = null;
     world._pendingReplaySaved = false;
   },
@@ -96,7 +97,7 @@ var GameFlow = {
     this._ending = false;
     if (!this.isMissionActive()) this.set(GAME_STATES.ACTIVE);
     if (window.ScoreTracker) ScoreTracker.start();
-    if (window.ReplayRecorder) ReplayRecorder.start();
+    if (window.ReplayRecorder){ if(this.state===GAME_STATES.FLIGHT_SCHOOL) ReplayRecorder.active=false; else ReplayRecorder.start(); }
     world._pendingReplayRecord = null;
     world._pendingReplaySaved = false;
     world.paused = false;
@@ -107,6 +108,17 @@ var GameFlow = {
     this._ending = true;
     this.lastOutcome = kind || world.outcome || 'LOSS';
     this.lastOutcomeText = txt || world.outcomeReason || '';
+    if (this.state === GAME_STATES.FLIGHT_SCHOOL){
+      if (window.ReplayRecorder) ReplayRecorder.active=false;
+      world._pendingReplayRecord = null; world._pendingReplaySaved = false;
+      if (window.ScoreTracker) ScoreTracker.lastScore = null;
+      if (typeof clearRuntimeState === 'function') clearRuntimeState({ keepMessage:false, clearProjectiles:true, pauseAudio:true });
+      if (typeof endTutorial === 'function') endTutorial();
+      this.set(GAME_STATES.MENU, { keepPause:true });
+      if (window.MenuUI) MenuUI.showMainMenu();
+      if (typeof banner === 'function') banner('TRAINING ENDED — NO REPLAY SAVED', 2.0);
+      return;
+    }
     if (window.ScoreTracker) this.lastScore = ScoreTracker.finish(this.lastOutcome, this.lastOutcomeText);
     else this.lastScore = { total:0, breakdown:{} };
     if (window.ReplayRecorder) world._pendingReplayRecord = ReplayRecorder.stop({ outcome:this.lastOutcome, reason:this.lastOutcomeText });

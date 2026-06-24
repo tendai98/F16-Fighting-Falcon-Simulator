@@ -37,6 +37,7 @@ var MenuUI = {
             '<button data-action="help">HELP / CONTROLS <span>ESC</span></button>'+
             '<button data-action="school">FLIGHT SCHOOL</button>'+
           '</div>'+
+          '<div class="ui-copy">Tendai Bhebhe ©</div>'+
         '</div></div>'+
       '<div class="game-modal" id="modal-debrief"></div>'+
       '<div class="game-modal" id="modal-browser"></div>'+
@@ -168,8 +169,8 @@ var MenuUI = {
   scoreTable:function(b){
     var rows = [
       ['primaryTargets','Primary Targets'],['secondaryTargets','Secondary Targets'],['enemyAircraft','Enemy Aircraft'],['samSites','SAM / Emitters'],
-      ['waypointDiscipline','Waypoint Discipline'],['weaponDiscipline','Weapon Discipline'],['takeoff','Takeoff'],['survival','Survival'],['penalties','Penalties'],
-      ['levelMultiplier','Level Multiplier'],['outcomeMultiplier','Outcome Multiplier']
+      ['waypointDiscipline','Waypoint Discipline'],['weaponDiscipline','Weapon Discipline'],['takeoff','Takeoff'],['survival','Survival'],
+      ['outcomeMultiplier','Outcome Multiplier']
     ];
     var h = '<table id="score-breakdown"><tbody>';
     rows.forEach(function(r){ if (b[r[0]] !== undefined) h += '<tr><td>'+r[1]+'</td><td>'+b[r[0]]+'</td></tr>'; });

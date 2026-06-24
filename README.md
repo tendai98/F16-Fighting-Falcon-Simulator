@@ -594,3 +594,9 @@ The full-screen legacy flight HUD remains restored: speed/altitude tapes, headin
 Low-level ingress now relies on the outside view, HUD altitude tape, HSD tactical picture, HAD/FCR emitter lock, terrain-masked missiles and SAM radar-horizon masking rather than a separate terrain page.
 
 Terrain-masked missiles, terrain solidity, replay/backend sync, enemy countermeasure tuning, Level 5, and the newer gameplay systems remain intact.
+
+## LANTIRN lesson / replay / low-level update
+- Added a dedicated LANTIRN low-level SA-3 Flight School lesson.
+- Replay now preserves the LANTIRN page, range, and FOV state instead of falling back to HSD.
+- Water bodies are disabled; dry channels and terrain valleys remain for route reading.
+- Low-level aircraft control has been tuned for smoother bank/pitch correction and a stronger speed impression.

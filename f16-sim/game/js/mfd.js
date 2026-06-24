@@ -23,6 +23,8 @@ class MFD {
     this.tgpZoom=2;          // 1..4 zoom stage (drives FOV)
     this.tgpTrack='AREA';    // AREA | POINT
     this.tgpPol='WHOT';      // WHOT (white-hot) | BHOT (black-hot)
+    this.lantRange=10;       // LANTIRN forward-look depth (NM)
+    this.lantFov='WIDE';     // WIDE | NAR, low-level navigation camera
     this.laser=false;        // TGP laser armed
     this.osbEls={};
     frameEl.querySelectorAll('.osb').forEach(b=>{
@@ -48,8 +50,9 @@ class MFD {
     this.refresh();
   }
   setPage(p){
-    if (p==='LANT') p='HSD';
     this.page=p;
+    const anyLant = (typeof MFDS!=='undefined') ? Object.keys(MFDS).some(k=>MFDS[k] && (k===this.id ? p : MFDS[k].page)==='LANT') : (p==='LANT');
+    world.lantirnOn = anyLant; world.lantirnMode = anyLant ? 'FLIR' : 'OFF';
     if (window.ReplayRecorder) ReplayRecorder.recordEvent('mfd_page', { mfd:this.id, page:p });
     this.refresh();
   }
@@ -66,6 +69,7 @@ class MFD {
     if (this.page==='HSD'){
       const rm={L1:10,L2:20,L3:40,L4:80};
       if (rm[k]){ this.setRange(rm[k]); return; }
+      if (k==='B3'){ this.setPage('LANT'); return; }
       if (k==='B4'){ this.setPage('ECM'); return; }
       if (k==='B5'){ if(this.range<20) this.range=40; this.setPage('THR'); return; }
     }
@@ -82,6 +86,12 @@ class MFD {
       const rm={L1:20,L2:40,L3:80,L4:160};
       if (rm[k]){ this.setRange(rm[k]); return; }
       if (k==='B1'){ this.setPage('HSD'); return; }
+    }
+    if (this.page==='LANT'){
+      const rm={L1:2,L2:5,L3:10,L4:20};
+      if (rm[k]){ this.lantRange=rm[k]; this.refresh(); return; }
+      if (k==='B1'){ this.setPage('HSD'); return; }
+      if (k==='R1'){ this.lantFov=this.lantFov==='WIDE'?'NAR':'WIDE'; this.refresh(); return; }
     }
     if (this.page==='SMS'){
       const sm={L1:1,L2:2,L3:3,L4:4,R1:5,R2:6,R3:7};
@@ -210,12 +220,17 @@ class MFD {
     }
     if (this.page==='HSD'){
       const rm={L1:10,L2:20,L3:40,L4:80}; if (rm[k]) return this.range===rm[k];
+      if (k==='B3') return false;
     }
     if (this.page==='THR'){
       const rm={L1:20,L2:40,L3:80,L4:160}; if (rm[k]) return this.range===rm[k];
     }
     if (this.page==='ECM'){
       if (k==='B1') return world.ecm.on;
+    }
+    if (this.page==='LANT'){
+      const rm={L1:2,L2:5,L3:10,L4:20}; if (rm[k]) return (this.lantRange||10)===rm[k];
+      if (k==='R1') return this.lantFov==='NAR';
     }
     if (this.page==='DLNK'){
       const rm={L1:20,L2:40,L3:80,L4:160}; if (rm[k]) return (this.dlRange||80)===rm[k];
@@ -253,7 +268,6 @@ class MFD {
   render(){
     const ctx=this.ctx;
     ctx.fillStyle='#01160a'; ctx.fillRect(0,0,this.W,this.H);
-    if (this.page==='LANT') this.page='HSD';
     (PAGES[this.page]||PAGES.DED).render(this,ctx);
     footer(this,ctx);
   }
@@ -264,7 +278,9 @@ const OSB={
   FCR:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
        L1:'10',L2:'20',L3:'40',L4:'80', B1:m=>m.fcrMode},
   HSD:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
-       L1:'10',L2:'20',L3:'40',L4:'80', B4:'ECM', B5:'THR'},
+       L1:'10',L2:'20',L3:'40',L4:'80', B3:'LANT', B4:'ECM', B5:'THR'},
+  LANT:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
+       L1:'2',L2:'5',L3:'10',L4:'20', B1:'HSD', R1:m=>m.lantFov},
   THR:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
        L1:'20',L2:'40',L3:'80',L4:'160', B1:'HSD'},
   ECM:{T1:'FCR',T2:'HSD',T3:'SMS',T4:'TGP',T5:'DED',
@@ -507,7 +523,6 @@ PAGES.FCR={
       const q=worldAt(sx,sy);
       if(q.fwd<-maxBack || q.fwd>maxF || Math.abs(q.right)>side) continue;
       const h=terrainH(q.x,q.y);
-      const wInfo=(typeof terrainWaterInfo==='function')?terrainWaterInfo(q.x,q.y):null;
       const dS=420;
       const hx=terrainH(q.x+dS,q.y)-terrainH(q.x-dS,q.y);
       const hy=terrainH(q.x,q.y+dS)-terrainH(q.x,q.y-dS);
@@ -516,7 +531,6 @@ PAGES.FCR={
       const ahead=clamp(q.fwd/maxF,0,1);
       const aspect=clamp((terrainH(q.x+sn*dS,q.y+cs*dS)-terrainH(q.x-sn*dS,q.y-cs*dS))/700,0,1);
       let b=0.10 + relief*0.34 + slope*0.34 + aspect*0.18;
-      if(wInfo) b=0.075 + (1-(wInfo.edge||0))*0.055;   // water/cool channels: dark but visible
       if(q.fwd<0) b*=0.55;
       const noise=((((i*17+j*31+Math.floor(world.t*8))&15)/15)-0.5)*0.055;
       const pass=Math.abs((sy-sweepY)/FH); const sweepBoost=Math.max(0,1-pass*9)*0.16;
@@ -537,17 +551,11 @@ PAGES.FCR={
       ctx.stroke();
     }
 
-    // Water and infrastructure overlays are dark/bright references for geography.
+    // Dry channel and infrastructure overlays are references for geography.
     if(typeof _riverCenterX==='function'){
       const pts=[];
       for(let k=-20;k<=120;k++){ const yy=ac.pos.y + (k/100)*maxF*1.25; pts.push({x:_riverCenterX(yy),y:yy}); }
-      drawPoly(pts,'rgba(30,150,80,0.72)',2.0,false);
-    }
-    const tf=(typeof TERRAIN_FEATURES!=='undefined')?TERRAIN_FEATURES:null;
-    if(tf&&Number.isFinite(tf.lakeX)&&Number.isFinite(tf.lakeY)){
-      const pts=[], r=tf.lakeR||1400;
-      for(let k=0;k<=64;k++){ const a=k/64*Math.PI*2; pts.push({x:tf.lakeX+Math.cos(a)*r,y:tf.lakeY+Math.sin(a)*r}); }
-      drawPoly(pts,'rgba(35,160,86,0.58)',1.4,true);
+      drawPoly(pts,'rgba(65,210,110,0.42)',1.35,false);
     }
     const inf=(world&&world.infrastructure)||{};
     for(const rd of (inf.roads||[])) drawPoly(rd.pts||[],'rgba(185,255,170,0.34)',1.1,false);
@@ -1401,7 +1409,119 @@ PAGES.TGP={
 
 
 
-/* ---------- LANTIRN removed: low-level navigation now uses HSD/FCR/HAD, outside view, and radar-horizon masking. ---------- */
+/* ---------- LANTIRN : forward-looking low-level FLIR/TV terrain page ---------- */
+PAGES.LANT={
+  render(m,ctx){
+    const ac=world.ac, W=m.W, H=m.H;
+    const PADx=18, PADt=30, PADb=36;
+    const VW=W-2*PADx, VH=H-PADt-PADb, x0=PADx, y0=PADt;
+    const cx=W/2, cy=y0+VH*0.60;
+    const rangeNM=m.lantRange||10, far=Math.max(1800, rangeNM*NM), near=180;
+    const mode=m.lantFov||'WIDE';
+    const hfov=(mode==='NAR'?52:72)*DEG, vfov=(mode==='NAR'?30:42)*DEG;
+    const fx=(VW/2)/Math.tan(hfov/2), fy=(VH/2)/Math.tan(vfov/2);
+    const b=acBasis(ac);
+    const dip=(mode==='NAR'?10:14)*DEG;
+    const eye={x:ac.pos.x+b.fwd.x*2.5+b.up.x*0.4, y:ac.pos.y+b.fwd.y*2.5+b.up.y*0.4, z:Math.max(4,ac.pos.z-0.9)};
+    let fwd=vnorm(vadd(vscale(b.fwd,Math.cos(dip)), vscale(b.up,-Math.sin(dip))));
+    let right=vcross(fwd,{x:0,y:0,z:1}); if(vlen(right)<1e-3) right={x:Math.cos(ac.psi),y:-Math.sin(ac.psi),z:0}; right=vnorm(right);
+    let up=vnorm(vcross(right,fwd));
+    const gF=vnorm({x:fwd.x,y:fwd.y,z:0}), gR=vnorm({x:right.x,y:right.y,z:0});
+    const green=(v,a)=>{ const k=clamp(v,0,1), aa=(a==null?1:a); const r=Math.round(14+84*k), g=Math.round(56+215*k), b=Math.round(8+72*k); return 'rgba('+r+','+g+','+b+','+aa.toFixed(3)+')'; };
+    const proj=(P)=>{ const r=vsub(P,eye), cz=vdot(r,fwd); if(cz<=6) return null; return { x:cx+fx*vdot(r,right)/cz, y:cy-fy*vdot(r,up)/cz, z:cz }; };
+    const inFrame=p=>!!p && p.x>=x0-60 && p.x<=x0+VW+60 && p.y>=y0-60 && p.y<=y0+VH+60;
+    const terrainPt=(dist, off)=>{ const wx=eye.x+gF.x*dist+gR.x*off, wy=eye.y+gF.y*dist+gR.y*off; return {x:wx,y:wy,z:terrainH(wx,wy)}; };
+    const drawPolyLine=(pts,col,width)=>{ if(!pts||pts.length<2) return; ctx.strokeStyle=col; ctx.lineWidth=width||1; ctx.beginPath(); let started=false; for(const pt of pts){ const p=proj({x:pt.x,y:pt.y,z:(pt.z!=null?pt.z:terrainH(pt.x,pt.y))+4}); if(!inFrame(p)){ started=false; continue; } if(!started){ ctx.moveTo(p.x,p.y); started=true; } else ctx.lineTo(p.x,p.y); } if(started) ctx.stroke(); };
+
+    ctx.fillStyle='#001106'; ctx.fillRect(0,0,W,H);
+    ctx.save(); ctx.beginPath(); ctx.rect(x0,y0,VW,VH); ctx.clip();
+    ctx.fillStyle='rgba(0,14,6,0.98)'; ctx.fillRect(x0,y0,VW,VH);
+
+    // soft sky / ground split for a real camera feel while keeping the page readable.
+    if (Math.abs(up.z)>1e-3){
+      const uz=(Math.abs(up.z)<1e-3)?(up.z<0?-1e-3:1e-3):up.z;
+      const yAt=sx=>{ const ccx=sx-cx; const ccy=-(ccx*right.z*fx/fy + fx*fwd.z)/uz; return cy-ccy; };
+      const yL=yAt(x0), yR=yAt(x0+VW);
+      ctx.fillStyle='rgba(4,28,12,0.70)'; ctx.beginPath(); ctx.moveTo(x0,y0-4); ctx.lineTo(x0+VW,y0-4); ctx.lineTo(x0+VW,yR); ctx.lineTo(x0,yL); ctx.closePath(); ctx.fill();
+    }
+
+    const NR=24, NC=30;
+    const rows=[];
+    for(let j=0;j<=NR;j++){
+      const u=j/NR;
+      const dist=near + Math.pow(u,1.55)*(far-near);
+      const halfW=Math.max(220, Math.tan(hfov*0.52)*dist*0.78);
+      rows.push({dist, halfW});
+    }
+    const quads=[];
+    for(let j=0;j<NR;j++){
+      const a0=rows[j], a1=rows[j+1];
+      for(let i=0;i<NC;i++){
+        const v0=(i/NC*2-1), v1=((i+1)/NC*2-1);
+        const p00=terrainPt(a0.dist, v0*a0.halfW), p10=terrainPt(a0.dist, v1*a0.halfW),
+              p11=terrainPt(a1.dist, v1*a1.halfW), p01=terrainPt(a1.dist, v0*a1.halfW);
+        const q00=proj(p00), q10=proj(p10), q11=proj(p11), q01=proj(p01);
+        if(!(inFrame(q00)||inFrame(q10)||inFrame(q11)||inFrame(q01))) continue;
+        const mx=(p00.x+p10.x+p11.x+p01.x)*0.25, my=(p00.y+p10.y+p11.y+p01.y)*0.25;
+        const hh=(p00.z+p10.z+p11.z+p01.z)*0.25;
+        const dx=terrainH(mx+220,my)-terrainH(mx-220,my), dy=terrainH(mx,my+220)-terrainH(mx,my-220);
+        const slope=clamp(Math.hypot(dx,dy)/1200,0,1);
+        const relief=clamp(hh/Math.max(1,TERRAIN_PEAK),0,1);
+        const facing=clamp((dx*gF.x+dy*gF.y)/650, -1, 1);
+        let lum=0.12 + relief*0.34 + slope*0.28 + Math.max(0,facing)*0.16;
+        const pass=Math.abs(((world.t*0.35)%1) - j/NR); lum += Math.max(0, 1-pass*9)*0.08;
+        quads.push({q00,q10,q11,q01, lum, dist:Math.hypot(mx-eye.x,my-eye.y), edge:slope>0.42 || Math.abs(facing)>0.36});
+      }
+    }
+    quads.sort((a,b)=>b.dist-a.dist);
+    for(const q of quads){
+      ctx.fillStyle=green(clamp(q.lum,0.06,0.98), 0.92);
+      ctx.beginPath(); ctx.moveTo(q.q00.x,q.q00.y); ctx.lineTo(q.q10.x,q.q10.y); ctx.lineTo(q.q11.x,q.q11.y); ctx.lineTo(q.q01.x,q.q01.y); ctx.closePath(); ctx.fill();
+      if(q.edge){ ctx.strokeStyle='rgba(185,255,175,0.18)'; ctx.lineWidth=0.8; ctx.stroke(); }
+    }
+
+    // Dry valley/channel reference.  Water bodies are disabled, but this
+    // centerline keeps the most useful low-level corridor readable in FLIR.
+    if(typeof _riverCenterX==='function'){
+      const pts=[]; for(let d=0; d<=far*1.05; d+=260){ const yy=eye.y+gF.y*d, xx=_riverCenterX(yy); pts.push({x:xx,y:yy,z:terrainH(xx,yy)+2}); }
+      drawPolyLine(pts,'rgba(75,255,135,0.38)',1.4);
+    }
+    const inf=(world&&world.infrastructure)||{};
+    for(const rd of (inf.roads||[])) drawPolyLine((rd.pts||[]).map(p=>({x:p.x,y:p.y,z:terrainH(p.x,p.y)+2})),'rgba(210,255,185,0.46)',1.2);
+    for(const pl of (inf.powerlines||[])) drawPolyLine([{x:pl.a.x,y:pl.a.y,z:terrainH(pl.a.x,pl.a.y)+18},{x:pl.b.x,y:pl.b.y,z:terrainH(pl.b.x,pl.b.y)+18}],'rgba(200,255,170,0.24)',0.9);
+    for(const br of (inf.bridges||[])){
+      const len=br.len||420, hd=br.hdg||0, si=Math.sin(hd), co=Math.cos(hd);
+      drawPolyLine([{x:br.x-si*len/2,y:br.y-co*len/2,z:terrainH(br.x-si*len/2,br.y-co*len/2)+6},{x:br.x+si*len/2,y:br.y+co*len/2,z:terrainH(br.x+si*len/2,br.y+co*len/2)+6}],'rgba(235,255,200,0.58)',1.5);
+    }
+
+    // A few threat / target highlights, but kept subtle so the geography remains primary.
+    const markTarget=(obj,label,col)=>{ if(!obj||obj.destroyed) return; const p=proj({x:obj.x,y:obj.y,z:terrainH(obj.x,obj.y)+8}); if(!inFrame(p)) return; ctx.strokeStyle=col; ctx.lineWidth=1.2; ctx.strokeRect(p.x-6,p.y-6,12,12); ctx.fillStyle=col; ctx.font='7px "Courier New"'; ctx.textAlign='left'; ctx.fillText(label,p.x+8,p.y+2); };
+    if(world.gndLock && !world.gndLock.destroyed) markTarget(world.gndLock,'DESIG',C_HOT);
+    else {
+      const gm=world.groundMovers.find(g=>!g.destroyed&&!g.underground&&distTo(g.x,g.y)<far*0.95); if(gm) markTarget(gm, gm.kind==='TEL'?'TEL':'MOVE', C_ORG);
+    }
+
+    // sensor sweep sparkle and reference symbology
+    const scanY=y0 + (((world.t*0.42)%1)*VH);
+    ctx.strokeStyle='rgba(120,255,150,0.20)'; ctx.lineWidth=1.2; ctx.beginPath(); ctx.moveTo(x0,scanY); ctx.lineTo(x0+VW,scanY); ctx.stroke();
+    ctx.strokeStyle='rgba(120,255,150,0.18)'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(cx,y0); ctx.lineTo(cx,y0+VH); ctx.stroke();
+    ctx.restore();
+
+    // HUD-like overlay for ownship reference while keeping the terrain image dominant.
+    ctx.strokeStyle=C_GREEN; ctx.lineWidth=1; ctx.strokeRect(x0,y0,VW,VH);
+    const hs=12, hg=5, hcy=y0+VH*0.63;
+    ctx.strokeStyle=C_HOT; ctx.lineWidth=1.1; ctx.beginPath(); ctx.moveTo(cx-hs,hcy); ctx.lineTo(cx-hg,hcy); ctx.moveTo(cx+hg,hcy); ctx.lineTo(cx+hs,hcy); ctx.moveTo(cx,hcy-hs); ctx.lineTo(cx,hcy-hg); ctx.moveTo(cx,hcy+hg); ctx.lineTo(cx,hcy+hs); ctx.stroke();
+    ctx.strokeStyle='rgba(168,255,192,0.70)'; ctx.lineWidth=1.2; ctx.beginPath(); ctx.moveTo(cx, y0+VH-24); ctx.lineTo(cx-9,y0+VH-10); ctx.lineTo(cx,y0+VH-14); ctx.lineTo(cx+9,y0+VH-10); ctx.stroke();
+
+    const agl=Math.max(0, ac.pos.z-terrainH(ac.pos.x,ac.pos.y));
+    const hdg=((ac.psi*RAD)%360+360)%360;
+    ctx.fillStyle=C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left'; ctx.fillText('LANTIRN FLIR', 6, 14);
+    ctx.textAlign='right'; ctx.fillText('R'+rangeNM+'  '+mode, W-6, 14);
+    ctx.textAlign='center'; ctx.font='9px "Courier New"'; ctx.fillText('FORWARD LOOK  LOW-LEVEL NAV', W/2, y0-6);
+    ctx.textAlign='left'; ctx.fillText('HDG '+String(Math.round(hdg)).padStart(3,'0')+'  AGL '+Math.round(agl)+'M', x0, H-12);
+    ctx.textAlign='right'; ctx.fillText('DIP '+Math.round(dip*RAD)+'°  LLTV', x0+VW, H-12);
+  }
+};
 
 /* ---------- DED : up-front controls / data entry (was the ICP) ---------- */
 let DED_PAGE = 'CNI';     // CNI | STPT | BIT | TUNE

@@ -19,14 +19,14 @@ class R3 {
   resize(){
     this.W = this.canvas.width;
     this.H = this.canvas.height;
-    const fovX = 88 * DEG;            // wide field of view — see much more of the world
+    const fovX = 96 * DEG;            // wider low-level field of view: stronger speed / terrain rush
     this.f = (this.W/2) / Math.tan(fovX/2);
   }
   setCamera(ac){
     // eye point: slightly above CG, a touch forward (pilot seat)
     const b = acBasis(ac);
     this.basis = b;
-    this.cam = vadd(ac.pos, vadd(vscale(b.up, 2.0), vscale(b.fwd, 2.5)));
+    this.cam = vadd(ac.pos, vadd(vscale(b.up, 1.35), vscale(b.fwd, 3.2)));
     this.cam.z += 0; // already in pos.z
   }
   // world -> camera space
@@ -212,8 +212,7 @@ class R3 {
         const h = (Hg[j][i]+Hg[j][i+1]+Hg[j+1][i+1]+Hg[j+1][i])*0.25;
         const slope = (Hg[j][i+1]-Hg[j][i]) + (Hg[j+1][i]-Hg[j][i]);
         const wx=(X[i]+X[i+1])*0.5, wy=(Y[j]+Y[j+1])*0.5;
-        const water = (typeof terrainWaterInfo==='function') ? terrainWaterInfo(wx,wy) : null;
-        quads.push({a,b,c,d,dist,h,slope,water});
+        quads.push({a,b,c,d,dist,h,slope});
       }
     }
     quads.sort((q1,q2)=>q2.dist-q1.dist);
@@ -226,10 +225,6 @@ class R3 {
       if (coarse){                                       // fade distant land into the haze
         const m = clamp((q.dist - nearClip)/Math.max(1,(farClip - nearClip)), 0, 1)*0.85;
         r = Math.round(r*(1-m) + 12*m); g = Math.round(g*(1-m) + 44*m); bl = Math.round(bl*(1-m) + 30*m);
-      }
-      if(q.water){
-        const edge=q.water.edge||0;
-        r=Math.round(8+edge*10); g=Math.round(45+edge*22); bl=Math.round(78+edge*80);
       }
       ctx.fillStyle = 'rgb('+r+','+g+','+bl+')';
       ctx.beginPath();
@@ -482,7 +477,7 @@ class R3 {
       }
       ctx.stroke();
     }
-    // sparse bridges across water/gorges
+    // sparse bridges across dry gorges
     for (const br of (inf.bridges||[])){
       if(!this.groundOverlayVisible(br.x,br.y,28)) continue;
       const c=Math.cos(br.hdg||0), si=Math.sin(br.hdg||0), hl=(br.len||360)/2, hw=(br.w||34)/2, z=terrainH(br.x,br.y)+8;

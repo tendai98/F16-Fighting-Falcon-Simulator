@@ -71,6 +71,7 @@ var ReplayUtils={
           sweep:_rr(m.sweep||0,2), sweepDir:m.sweepDir||1, fcrMode:m.fcrMode||'RWS',
           tgpFov:m.tgpFov||'WIDE', tgpZoom:m.tgpZoom||2, tgpTrack:m.tgpTrack||'AREA',
           tgpPol:m.tgpPol||'WHOT', laser:!!m.laser, dlRange:m.dlRange||80,
+          lantRange:m.lantRange||10, lantFov:m.lantFov||'WIDE',
           lockedId:m.locked ? _id(m.locked,'lock') : null
         };
       }
@@ -82,6 +83,7 @@ var ReplayUtils={
       masterArm:world.masterArm||'SAFE', masterMode:world.masterMode||'NAV',
       selectedStation:world.selectedStation||5, stations:st,
       designated:!!world.designated, tgpLaser:!!world.tgpLaser,
+      lantirnOn:!!world.lantirnOn, lantirnMode:world.lantirnMode||'OFF',
       dlEntry:world.dlEntry||'', datalinkTuned:world.datalinkTuned||'',
       dedPage:(typeof DED_PAGE!=='undefined')?DED_PAGE:'CNI',
       ecm:{ on:!!(world.ecm&&world.ecm.on), cursor:world.ecm&&world.ecm.cursor||50, jam:_jc(world.ecm&&world.ecm.jam||[]) },
@@ -434,7 +436,7 @@ var ReplayPlayback={
     world.activeMfdId=c.activeMfdId||world.activeMfdId||'center';
     world.steerpoint=c.steerpoint||world.steerpoint||1; world.masterArm=c.masterArm||'SAFE'; world.masterMode=c.masterMode||'NAV'; world.selectedStation=c.selectedStation||world.selectedStation||5;
     if(typeof isWeaponStation==='function'){ var st=(world.stations||[]).find(function(s){return s.id===world.selectedStation;}); if(!isWeaponStation(st)){ var first=(world.stations||[]).find(isWeaponStation); world.selectedStation=first?first.id:5; } }
-    world.designated=!!c.designated; world.tgpLaser=!!c.tgpLaser; world.lantirnOn=false; world.lantirnMode='OFF'; world.dlEntry=c.dlEntry||''; world.datalinkTuned=c.datalinkTuned||'';
+    world.designated=!!c.designated; world.tgpLaser=!!c.tgpLaser; world.lantirnOn=!!c.lantirnOn; world.lantirnMode=c.lantirnMode||'OFF'; world.dlEntry=c.dlEntry||''; world.datalinkTuned=c.datalinkTuned||'';
     if(world.ecm && c.ecm){ world.ecm.on=!!c.ecm.on; world.ecm.cursor=c.ecm.cursor||50; world.ecm.jam=_jc(c.ecm.jam||[]); }
     if(c.stations && world.stations){
       var by={}; c.stations.forEach(function(s){by[s.id]=s;});
@@ -454,11 +456,14 @@ var ReplayPlayback={
       for(var id in c.mfds){
         var m=MFDS[id], s=c.mfds[id]; if(!m||!s) continue;
         var pageChanged=(m.page!==s.page);
-        m.page=(s.page==='LANT'?'HSD':(s.page||m.page)); m.range=s.range||m.range; m.azScan=s.azScan||m.azScan; m.sweep=s.sweep||0; m.sweepDir=s.sweepDir||1; m.fcrMode=s.fcrMode||m.fcrMode;
+        m.page=s.page||m.page; m.range=s.range||m.range; m.azScan=s.azScan||m.azScan; m.sweep=s.sweep||0; m.sweepDir=s.sweepDir||1; m.fcrMode=s.fcrMode||m.fcrMode;
         m.tgpFov=s.tgpFov||m.tgpFov; m.tgpZoom=s.tgpZoom||m.tgpZoom; m.tgpTrack=s.tgpTrack||m.tgpTrack; m.tgpPol=s.tgpPol||m.tgpPol; m.laser=!!s.laser; m.dlRange=s.dlRange||m.dlRange||80;
+        m.lantRange=s.lantRange||m.lantRange||10; m.lantFov=s.lantFov||m.lantFov||'WIDE';
         m.locked=s.lockedId?ReplayUtils.findEntity(s.lockedId):null;
         if(m.refresh) m.refresh();
       }
+      world.lantirnOn=Object.keys(MFDS).some(function(k){return MFDS[k] && MFDS[k].page==='LANT';});
+      world.lantirnMode=world.lantirnOn?'FLIR':'OFF';
     }
     if(typeof setActive==='function') setActive();
   },
