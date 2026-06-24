@@ -154,52 +154,10 @@ function missileTargetObject(m){ return m.team==='RED' ? world.ac : (m.tgt||null
 function liveTargetPos(m){
   if (m.team==='RED') return world.ac.pos;
   if (m.groundPos){
-    if ((m.kind==='HARM' || /HARM/.test(m.kind||'')) && m.emitter && m.emitter.live) return {x:m.emitter.x, y:m.emitter.y, z:terrainH(m.emitter.x,m.emitter.y)+24};
-    const th=terrainH(m.groundPos.x,m.groundPos.y);
-    return {x:m.groundPos.x, y:m.groundPos.y, z:Math.max(m.groundPos.z||0, th+14)};
+    if ((m.kind==='HARM' || /HARM/.test(m.kind||'')) && m.emitter && m.emitter.live) return {x:m.emitter.x, y:m.emitter.y, z:terrainH(m.emitter.x,m.emitter.y)+3};
+    return m.groundPos;
   }
   return (m.tgt && m.tgt.hp>0) ? banditPos(m.tgt) : null;
-}
-
-function groundMissileImpactPoint(m){
-  if (!m || !m.groundPos) return null;
-  const terrain=terrainH(m.groundPos.x,m.groundPos.y);
-  // Keep the stored designation as the visual/terminal impact point.  Do not use
-  // the lifted seeker/LOS aim point here, otherwise the weapon can pass over or
-  // beside the TGP crosshair and still score a wide proximity kill.
-  return {x:m.groundPos.x, y:m.groundPos.y, z:Math.max(m.groundPos.z||0, terrain+3)};
-}
-function groundMissileAimPoint(m, finalPos, prof){
-  // Guide ground weapons through a shallow loft in mid-course, but force the
-  // terminal aim point back onto the exact designation so the TGP shows a real
-  // hit on the locked point instead of an offset blast kill.
-  if (!m || !m.groundPos || !finalPos) return finalPos;
-  const dxy=Math.hypot(finalPos.x-m.pos.x, finalPos.y-m.pos.y);
-  const terrain=terrainH(finalPos.x, finalPos.y);
-  const exactZ=Math.max(finalPos.z||0, terrain+3);
-  const isHarm=(m.kind==='HARM' || /HARM/.test(m.kind||m.weapon||''));
-  const midcourseZ=Math.max(exactZ, terrain+(isHarm?22:16));
-  const terminalBlend=clamp((dxy-140)/950,0,1);
-  const maxLoft=isHarm?520:320;
-  let loft=clamp(dxy*0.055, 0, maxLoft);
-  loft*=clamp((dxy-700)/2500,0,1);
-  return {x:finalPos.x, y:finalPos.y, z:exactZ*(1-terminalBlend)+midcourseZ*terminalBlend+loft};
-}
-function groundMissileTerrainBlock(m, finalPos){
-  if (!m || !m.groundPos || !finalPos || typeof terrainLineBlockPoint!=='function') return null;
-  const terrain=terrainH(finalPos.x, finalPos.y);
-  // Test against a realistic visible aim point above the object/emitter, not the
-  // terrain surface.  Use a small clearance margin: physical collision with the
-  // ground is handled separately after movement.
-  const losTarget={x:finalPos.x, y:finalPos.y, z:Math.max(finalPos.z||0, terrain+22)};
-  const block=terrainLineBlockPoint(m.pos.x,m.pos.y,m.pos.z,losTarget.x,losTarget.y,losTarget.z,8);
-  if (!block) return null;
-  const dTarget=Math.hypot(finalPos.x-m.pos.x, finalPos.y-m.pos.y);
-  const blockToTarget=Math.hypot(finalPos.x-block.x, finalPos.y-block.y);
-  // Ignore near-terminal grazing; the target itself sits on terrain and the old
-  // code falsely treated that final descent as a mountain mask.
-  if (dTarget < 1800 || blockToTarget < 650 || block.u > 0.92) return null;
-  return block;
 }
 function notchQuality(m, targetObj, tgtPos){
   if (!targetObj || !tgtPos || !isRadarMissile(m)) return 0;
@@ -662,18 +620,30 @@ function updateMissiles(dt){
     if (!tgtPos || m.t>m.life){ world.sams.splice(i,1); continue; }
 
     let notch = 0, decoyed = false, terrainBlocked = false, terrainImpact = null;
-    const finalGroundPos = m.groundPos ? groundMissileImpactPoint(m) : null;
-    const block = m.groundPos ? groundMissileTerrainBlock(m, finalGroundPos) : missileTerrainBlock(m, tgtPos, 35);
-    if (block && block.u < 0.985){
+    const groundExact = (m.groundPos && trueTgtPos) ? {...trueTgtPos} : null;
+    let guidanceTgt = tgtPos;
+    let terminalGround = false;
+    if (m.groundPos && groundExact){
+      const hDist = Math.hypot(groundExact.x-m.pos.x, groundExact.y-m.pos.y);
+      terminalGround = hDist < ((m.kind==='HARM' || /HARM/.test(m.kind||'')) ? 1300 : 950);
+      const loft = terminalGround ? 22 : clamp(hDist*0.08, 140, 720);
+      // Shallow mid-course loft clears visible terrain, but terminal guidance
+      // returns to the exact stored designation point so TGP impacts look honest.
+      guidanceTgt = {x:groundExact.x, y:groundExact.y, z:groundExact.z + loft};
+    }
+    const maskCheckTgt = m.groundPos ? guidanceTgt : tgtPos;
+    const maskMargin = m.groundPos ? 18 : 35;
+    const maskLimit = m.groundPos ? (terminalGround ? 0.70 : 0.92) : 0.985;
+    const block = missileTerrainBlock(m, maskCheckTgt, maskMargin);
+    if (block && block.u < maskLimit){
       terrainBlocked = true;
       terrainImpact = block;
       m._maskT = (m._maskT||0) + dt;
-      m.energy -= (m.groundPos ? 0.12 : (isRadarMissile(m)?0.26:0.18)) * dt;
+      m.energy -= (m.groundPos ? 0.18 : (isRadarMissile(m)?0.26:0.18)) * dt;
       if (m.groundPos){
-        // Ground-attack weapons cannot guide through a real ridge.  The block
-        // filter above ignores false near-target grazing, so only genuine terrain
-        // masks redirect the shot into the masking terrain.
-        tgtPos = {x:block.x, y:block.y, z:block.z+5};
+        // Terrain still masks real shots, but do not treat harmless grazing near
+        // the designated terminal point as a full miss.
+        tgtPos = {x:block.x, y:block.y, z:block.z};
         m._terrainMaskedTarget = true;
       } else if (m._lastTgtPos){
         // Air-to-air missiles coast toward stale target memory briefly, then fail.
@@ -684,7 +654,7 @@ function updateMissiles(dt){
       }
     } else {
       m._maskT = Math.max(0,(m._maskT||0)-dt*0.75);
-      if (m.groundPos) m._terrainMaskedTarget = false;
+      if (m.groundPos){ m._terrainMaskedTarget = false; tgtPos = terminalGround ? groundExact : guidanceTgt; }
     }
 
     if (!m.groundPos && !terrainBlocked){
@@ -700,9 +670,6 @@ function updateMissiles(dt){
       }
     } else if (!m.groundPos && !m._lastTgtPos && trueTgtPos){
       m._lastTgtPos={...trueTgtPos};
-    }
-    if (m.groundPos && !m._terrainMaskedTarget && finalGroundPos){
-      tgtPos = groundMissileAimPoint(m, finalGroundPos, prof);
     }
 
     const toTgt=vsub(tgtPos, m.pos);
@@ -756,25 +723,23 @@ function updateMissiles(dt){
     }
 
     if (m.groundPos){                          // guided surface attack (AGM / HARM)
-      const finalPos = finalGroundPos || tgtPos;
-      const gd = vlen(vsub(finalPos, m.pos));
-      const horizD = Math.hypot(finalPos.x-m.pos.x, finalPos.y-m.pos.y);
-      const prevGd = (m._gpd===undefined) ? 1e9 : m._gpd;
-      const directHit = gd < Math.max(12, prof.prox*0.45);
-      const closePass = prevGd < 55 && gd > prevGd && horizD < 45;
-      const terminalHit = directHit || closePass;
-      const expired = missileRangeExceeded(m, prof) || m.energy<=0.03;
-      if (terminalHit || hitGround || expired){
-        const terrainHitOnly = hitGround && !terminalHit;
-        const ip = terminalHit ? finalPos : {x:m.pos.x, y:m.pos.y, z:Math.max(m.pos.z, terrainH(m.pos.x,m.pos.y)+1)};
-        addEffect(ip, terminalHit?1.35:0.95, terrainHitOnly?'blast':'kill');
-        if (window.recordMissionEvent) recordMissionEvent('projectile_impact', { weapon:m.weapon||m.kind||'MISSILE', kind:m.kind||'missile', x:ip.x, y:ip.y, z:ip.z, terrainMasked:!!m._terrainMaskedTarget, directHit:!!terminalHit, terrainHit:!!terrainHitOnly });
-        if (terrainHitOnly){
-          banner(m._terrainMaskedTarget?'MISSILE TERRAIN MASKED':'MISSILE HIT TERRAIN', 1.2);
-        } else if (m._terrainMaskedTarget){
+      const exact = trueTgtPos ? {...trueTgtPos} : tgtPos;
+      const gd = vlen(vsub(tgtPos, m.pos));
+      const exactD = vlen(vsub(exact, m.pos));
+      const tightHit = exactD < ((m.kind==='HARM' || /HARM/.test(m.kind||'')) ? 34 : 28);
+      const tightPass = (m._gpdExact!==undefined && m._gpdExact < 46 && exactD > m._gpdExact && exactD < 70);
+      const terminalGroundHit = hitGround && exactD < 44;
+      const directImpact = tightHit || tightPass || terminalGroundHit;
+      if (directImpact || hitGround || missileRangeExceeded(m, prof) || m.energy<=0.03){
+        const ip = directImpact ? exact : {x:m.pos.x, y:m.pos.y, z:Math.max(m.pos.z, terrainH(m.pos.x,m.pos.y)+1)};
+        addEffect(ip, directImpact?1.35:0.95);
+        if (window.recordMissionEvent) recordMissionEvent('projectile_impact', { weapon:m.weapon||m.kind||'MISSILE', kind:m.kind||'missile', x:ip.x, y:ip.y, z:ip.z, terrainMasked:!!m._terrainMaskedTarget, directImpact:!!directImpact });
+        if (m._terrainMaskedTarget){
           banner('MISSILE TERRAIN MASKED', 1.2);
-        } else if (expired && !terminalHit){
-          banner(missileRangeExceeded(m, prof)?'MISSILE OUT OF RANGE':'MISSILE LOST ENERGY', 1.0);
+        } else if (missileRangeExceeded(m, prof)){
+          banner('MISSILE OUT OF RANGE', 1.0);
+        } else if (!directImpact){
+          banner(hitGround?'MISSILE TERRAIN HIT':'MISSILE MISS', 1.0);
         } else if (m.live!==false && m.energy>0.02){
           if (m.kind==='HARM' || /HARM/.test(m.kind||'')){
             if (m.emitter && m.emitter.live){
@@ -784,11 +749,11 @@ function updateMissiles(dt){
               banner('HARM KILL — '+m.emitter.name, 2.0);
             } else banner('HARM IMPACT', 1.2);
           } else {
-            bombImpact(finalPos.x, finalPos.y, m.weapon||m.kind||'AGM');
+            bombImpact(exact.x, exact.y, m.weapon||m.kind||'AGM');
           }
         }
         world.sams.splice(i,1);
-      } else { m._gpd = gd; }
+      } else { m._gpd = gd; m._gpdExact = exactD; }
       continue;
     }
 
@@ -854,7 +819,9 @@ function updateThreats(dt){
   const RED_CAP = 8;
   let redInAir = 0; for (const s of world.sams) if (s.team==='RED') redInAir++;
   const nearBase = Math.hypot(ac.pos.x, ac.pos.y) < BASE_SAFE_R;   // safe corridor over home
-  const fireGap = 9 / (world._aggr || 0.8);                        // EASY ~16s … ACE ~7s
+  const aggr = world._aggr || 0.8;
+  const fireGap = 4.2 / aggr;                                      // quick re-shot spacing once detected
+  const reactionDelay = Math.max(0.35, 0.75 / aggr);               // fast first shot inside ring
   for (const th of world.threats){
     if (!th.live){ th.tracking=false; continue; }
     updateSamScan(th, dt);                              // advance scan pattern / handle frequency hops
@@ -867,8 +834,10 @@ function updateThreats(dt){
     th.tracking = inRing;
     if (inRing){
       anyTrack=true;
+      if (!th._wasInRing) th._dwell = 0;
+      th._wasInRing = true;
       th._dwell = (th._dwell||0) + dt;
-      if (th._dwell > 4 && world.t - th.launchT > fireGap && redInAir < RED_CAP && (!world._tutorial || world._tutFire)){
+      if (th._dwell > reactionDelay && world.t - (th.launchT||-999) > fireGap && redInAir < RED_CAP && (!world._tutorial || world._tutFire)){
         th.launchT = world.t; redInAir++;
         const z = terrainH(th.x,th.y);
         const dir = vnorm(vsub(ac.pos, {x:th.x,y:th.y,z:z+4}));
@@ -878,7 +847,7 @@ function updateThreats(dt){
         if (window.ReplayRecorder) ReplayRecorder.recordEvent('missile_launch',{team:'RED',source:th.name||'SAM',kind:'SAM'});
         banner('★ MISSILE LAUNCH ★', 1.6); flash(0.4);
       }
-    } else { th._dwell = 0; }
+    } else { th._dwell = 0; th._wasInRing = false; }
   }
   world._rwrActive = anyTrack;
   if (world.ecm.jam && world.ecm.jam.length){      // free jam slots whose emitter died or hopped its band away

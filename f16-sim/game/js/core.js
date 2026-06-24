@@ -861,7 +861,11 @@ function updateFlight(ac, dt){
     ac.phi = lerp(ac.phi, 0, 1-Math.pow(0.001,dt));      // wings level on ground
   } else {
     ac.phi = clamp(ac.phi + ctrl.roll * FM.rollRate * dt, -125*DEG, 125*DEG);
-    if (Math.abs(ctrl.roll) < 0.03) ac.phi = lerp(ac.phi, 0, 1-Math.pow(0.68,dt)); // smoother self-centering bank hold
+    // Very light wing-leveler only near level flight.  Shallow/medium bank
+    // angles should hold so the pilot is not fighting auto-roll during gun runs
+    // or low-level route turns.
+    if (Math.abs(ctrl.roll) < 0.025 && Math.abs(ac.phi) < 9*DEG)
+      ac.phi = lerp(ac.phi, 0, 1-Math.pow(0.90,dt));
   }
 
   const thrust = lerp(FM.idleThrust, FM.maxThrust, ac.throttle) * rho;

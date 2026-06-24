@@ -1413,137 +1413,111 @@ PAGES.TGP={
 PAGES.LANT={
   render(m,ctx){
     const ac=world.ac, W=m.W, H=m.H;
-    // Full-bleed sensor window inside the MFD glass.  Keep only a tiny CRT edge
-    // for labels so the terrain picture cannot appear as a narrow clipped slab.
-    const x0=5, y0=22, VW=W-10, VH=H-42;
-    const cx=x0+VW/2, cy=y0+VH*0.52;
-    const rangeNM=m.lantRange||10, far=Math.max(2200, rangeNM*NM), near=45;
+    const PADx=18, PADt=30, PADb=36;
+    const VW=W-2*PADx, VH=H-PADt-PADb, x0=PADx, y0=PADt;
+    const cx=W/2, cy=y0+VH*0.60;
+    const rangeNM=m.lantRange||10, far=Math.max(1800, rangeNM*NM), near=180;
     const mode=m.lantFov||'WIDE';
-    const hfov=(mode==='NAR'?46:68)*DEG, vfov=(mode==='NAR'?28:42)*DEG;
+    const hfov=(mode==='NAR'?52:72)*DEG, vfov=(mode==='NAR'?30:42)*DEG;
+    const fx=(VW/2)/Math.tan(hfov/2), fy=(VH/2)/Math.tan(vfov/2);
     const b=acBasis(ac);
-    const dip=(mode==='NAR'?8:12)*DEG;
-    const eye={x:ac.pos.x+b.fwd.x*5, y:ac.pos.y+b.fwd.y*5, z:Math.max(8,ac.pos.z-1.0)};
+    const dip=(mode==='NAR'?10:14)*DEG;
+    const eye={x:ac.pos.x+b.fwd.x*2.5+b.up.x*0.4, y:ac.pos.y+b.fwd.y*2.5+b.up.y*0.4, z:Math.max(4,ac.pos.z-0.9)};
     let fwd=vnorm(vadd(vscale(b.fwd,Math.cos(dip)), vscale(b.up,-Math.sin(dip))));
-    // Roll-stabilized camera axes: the page behaves like a sensor video, not a
-    // terrain mesh pasted onto a vertical clipping plane.
-    let right=vcross(fwd,{x:0,y:0,z:1});
-    if(vlen(right)<1e-3) right={x:Math.cos(ac.psi),y:-Math.sin(ac.psi),z:0};
-    right=vnorm(right);
-    const up=vnorm(vcross(right,fwd));
-    const tanH=Math.tan(hfov/2), tanV=Math.tan(vfov/2);
-    const green=(v,a)=>{ const k=clamp(v,0,1), aa=(a==null?1:a); const r=Math.round(10+82*k), g=Math.round(48+215*k), bb=Math.round(8+78*k); return 'rgba('+r+','+g+','+bb+','+aa.toFixed(3)+')'; };
-    const makeRay=(sx,sy)=>{
-      const u=((sx-x0)/VW)*2-1;
-      const v=1-((sy-y0)/VH)*2;
-      return vnorm(vadd(vadd(fwd,vscale(right,u*tanH)),vscale(up,v*tanV)));
-    };
-    const proj=(P)=>{ const r=vsub(P,eye), cz=vdot(r,fwd); if(cz<=3) return null; const px=cx+(vdot(r,right)/cz/tanH)*VW/2, py=cy-(vdot(r,up)/cz/tanV)*VH/2; return {x:px,y:py,z:cz}; };
-    // Allow generous overscan for projected overlays. The video image itself is
-    // always filled by ray-cast cells; this only prevents reference lines from
-    // being chopped at the edge of the sensor picture.
-    const inFrame=p=>!!p && p.x>=x0-110 && p.x<=x0+VW+110 && p.y>=y0-80 && p.y<=y0+VH+80;
-    const intersectTerrain=(ray)=>{
-      let lastS=near, lastZ=eye.z+ray.z*lastS-terrainH(eye.x+ray.x*lastS,eye.y+ray.y*lastS);
-      for(let s=near+70; s<=far; s+=clamp(s*0.052,70,480)){
-        const x=eye.x+ray.x*s, y=eye.y+ray.y*s, z=eye.z+ray.z*s;
-        const dz=z-terrainH(x,y);
-        if(dz<=0){
-          let lo=lastS, hi=s;
-          for(let k=0;k<6;k++){
-            const mid=(lo+hi)*0.5, mx=eye.x+ray.x*mid, my=eye.y+ray.y*mid, mz=eye.z+ray.z*mid;
-            if(mz-terrainH(mx,my)>0) lo=mid; else hi=mid;
-          }
-          const hitS=hi, hx=eye.x+ray.x*hitS, hy=eye.y+ray.y*hitS;
-          return {x:hx,y:hy,z:terrainH(hx,hy),d:hitS};
-        }
-        lastS=s; lastZ=dz;
-      }
-      return null;
-    };
-    const terrainLum=(hit,ray,cellJ,rows)=>{
-      const ds=260, h=hit.z;
-      const hx=terrainH(hit.x+ds,hit.y)-terrainH(hit.x-ds,hit.y);
-      const hy=terrainH(hit.x,hit.y+ds)-terrainH(hit.x,hit.y-ds);
-      const slope=clamp(Math.hypot(hx,hy)/1350,0,1);
-      const relief=clamp(h/Math.max(1,TERRAIN_PEAK),0,1);
-      const n=vnorm({x:-hx/(ds*2),y:-hy/(ds*2),z:1});
-      const face=clamp(vdot(n,vscale(ray,-1)),0,1);
-      const rangeFade=1-clamp(hit.d/far,0,1)*0.18;
-      const sweep=Math.max(0,1-Math.abs(((world.t*0.38)%1)-cellJ/rows)*8)*0.075;
-      return clamp((0.11 + relief*0.24 + slope*0.30 + face*0.30)*rangeFade + sweep,0.055,0.98);
-    };
-    const drawPolyLine=(pts,col,width)=>{
-      if(!pts||pts.length<2) return;
-      ctx.strokeStyle=col; ctx.lineWidth=width||1; ctx.beginPath(); let started=false;
-      for(const pt of pts){ const p=proj({x:pt.x,y:pt.y,z:(pt.z!=null?pt.z:terrainH(pt.x,pt.y))+4});
-        if(!inFrame(p)){ started=false; continue; }
-        if(!started){ ctx.moveTo(p.x,p.y); started=true; } else ctx.lineTo(p.x,p.y);
-      }
-      if(started) ctx.stroke();
-    };
+    let right=vcross(fwd,{x:0,y:0,z:1}); if(vlen(right)<1e-3) right={x:Math.cos(ac.psi),y:-Math.sin(ac.psi),z:0}; right=vnorm(right);
+    let up=vnorm(vcross(right,fwd));
+    const gF=vnorm({x:fwd.x,y:fwd.y,z:0}), gR=vnorm({x:right.x,y:right.y,z:0});
+    const green=(v,a)=>{ const k=clamp(v,0,1), aa=(a==null?1:a); const r=Math.round(14+84*k), g=Math.round(56+215*k), b=Math.round(8+72*k); return 'rgba('+r+','+g+','+b+','+aa.toFixed(3)+')'; };
+    const proj=(P)=>{ const r=vsub(P,eye), cz=vdot(r,fwd); if(cz<=6) return null; return { x:cx+fx*vdot(r,right)/cz, y:cy-fy*vdot(r,up)/cz, z:cz }; };
+    const inFrame=p=>!!p && p.x>=x0-60 && p.x<=x0+VW+60 && p.y>=y0-60 && p.y<=y0+VH+60;
+    const terrainPt=(dist, off)=>{ const wx=eye.x+gF.x*dist+gR.x*off, wy=eye.y+gF.y*dist+gR.y*off; return {x:wx,y:wy,z:terrainH(wx,wy)}; };
+    const drawPolyLine=(pts,col,width)=>{ if(!pts||pts.length<2) return; ctx.strokeStyle=col; ctx.lineWidth=width||1; ctx.beginPath(); let started=false; for(const pt of pts){ const p=proj({x:pt.x,y:pt.y,z:(pt.z!=null?pt.z:terrainH(pt.x,pt.y))+4}); if(!inFrame(p)){ started=false; continue; } if(!started){ ctx.moveTo(p.x,p.y); started=true; } else ctx.lineTo(p.x,p.y); } if(started) ctx.stroke(); };
 
     ctx.fillStyle='#001106'; ctx.fillRect(0,0,W,H);
     ctx.save(); ctx.beginPath(); ctx.rect(x0,y0,VW,VH); ctx.clip();
-    const bg=ctx.createLinearGradient(0,y0,0,y0+VH);
-    bg.addColorStop(0,'rgba(2,31,11,0.96)'); bg.addColorStop(0.5,'rgba(2,21,8,0.98)'); bg.addColorStop(1,'rgba(0,11,4,1)');
-    ctx.fillStyle=bg; ctx.fillRect(x0,y0,VW,VH);
+    ctx.fillStyle='rgba(0,14,6,0.98)'; ctx.fillRect(x0,y0,VW,VH);
 
-    // Ray-cast the video image cell-by-cell. Every MFD cell receives either a
-    // terrain hit or a horizon fill, so the forward-looking camera cannot form
-    // trapezoid side gaps or black clipped wedges when the aircraft pitches,
-    // banks, or flies close to terrain.
-    const NX=82, NY=66, cw=VW/NX, ch=VH/NY;
-    for(let j=0;j<NY;j++) for(let i=0;i<NX;i++){
-      const sx=x0+(i+0.5)*cw, sy=y0+(j+0.5)*ch, ray=makeRay(sx,sy);
-      const hit=intersectTerrain(ray);
-      if(hit){
-        const noise=((((i*19+j*37+Math.floor(world.t*11))&15)/15)-0.5)*0.035;
-        ctx.fillStyle=green(clamp(terrainLum(hit,ray,j,NY)+noise,0.05,1),1.00);
-      } else {
-        // No terrain hit: real forward video sky/deep horizon, not an empty gap.
-        const sky=0.08 + (1-j/NY)*0.10;
-        ctx.fillStyle=green(sky,0.92);
-      }
-      // Slight overlap between cells eliminates sub-pixel cracks from browser
-      // scaling/zoom without changing the sensor geometry.
-      ctx.fillRect(x0+i*cw-0.65, y0+j*ch-0.65, cw+1.9, ch+1.9);
+    // soft sky / ground split for a real camera feel while keeping the page readable.
+    if (Math.abs(up.z)>1e-3){
+      const uz=(Math.abs(up.z)<1e-3)?(up.z<0?-1e-3:1e-3):up.z;
+      const yAt=sx=>{ const ccx=sx-cx; const ccy=-(ccx*right.z*fx/fy + fx*fwd.z)/uz; return cy-ccy; };
+      const yL=yAt(x0), yR=yAt(x0+VW);
+      ctx.fillStyle='rgba(4,28,12,0.70)'; ctx.beginPath(); ctx.moveTo(x0,y0-4); ctx.lineTo(x0+VW,y0-4); ctx.lineTo(x0+VW,yR); ctx.lineTo(x0,yL); ctx.closePath(); ctx.fill();
     }
 
-    // Dry valley/channel reference and man-made features remain overlaid, but
-    // they are projected through the same camera instead of forcing mesh edges.
+    const NR=24, NC=30;
+    const rows=[];
+    for(let j=0;j<=NR;j++){
+      const u=j/NR;
+      const dist=near + Math.pow(u,1.55)*(far-near);
+      const halfW=Math.max(220, Math.tan(hfov*0.52)*dist*0.78);
+      rows.push({dist, halfW});
+    }
+    const quads=[];
+    for(let j=0;j<NR;j++){
+      const a0=rows[j], a1=rows[j+1];
+      for(let i=0;i<NC;i++){
+        const v0=(i/NC*2-1), v1=((i+1)/NC*2-1);
+        const p00=terrainPt(a0.dist, v0*a0.halfW), p10=terrainPt(a0.dist, v1*a0.halfW),
+              p11=terrainPt(a1.dist, v1*a1.halfW), p01=terrainPt(a1.dist, v0*a1.halfW);
+        const q00=proj(p00), q10=proj(p10), q11=proj(p11), q01=proj(p01);
+        if(!(inFrame(q00)||inFrame(q10)||inFrame(q11)||inFrame(q01))) continue;
+        const mx=(p00.x+p10.x+p11.x+p01.x)*0.25, my=(p00.y+p10.y+p11.y+p01.y)*0.25;
+        const hh=(p00.z+p10.z+p11.z+p01.z)*0.25;
+        const dx=terrainH(mx+220,my)-terrainH(mx-220,my), dy=terrainH(mx,my+220)-terrainH(mx,my-220);
+        const slope=clamp(Math.hypot(dx,dy)/1200,0,1);
+        const relief=clamp(hh/Math.max(1,TERRAIN_PEAK),0,1);
+        const facing=clamp((dx*gF.x+dy*gF.y)/650, -1, 1);
+        let lum=0.12 + relief*0.34 + slope*0.28 + Math.max(0,facing)*0.16;
+        const pass=Math.abs(((world.t*0.35)%1) - j/NR); lum += Math.max(0, 1-pass*9)*0.08;
+        quads.push({q00,q10,q11,q01, lum, dist:Math.hypot(mx-eye.x,my-eye.y), edge:slope>0.42 || Math.abs(facing)>0.36});
+      }
+    }
+    quads.sort((a,b)=>b.dist-a.dist);
+    for(const q of quads){
+      ctx.fillStyle=green(clamp(q.lum,0.06,0.98), 0.92);
+      ctx.beginPath(); ctx.moveTo(q.q00.x,q.q00.y); ctx.lineTo(q.q10.x,q.q10.y); ctx.lineTo(q.q11.x,q.q11.y); ctx.lineTo(q.q01.x,q.q01.y); ctx.closePath(); ctx.fill();
+      if(q.edge){ ctx.strokeStyle='rgba(185,255,175,0.18)'; ctx.lineWidth=0.8; ctx.stroke(); }
+    }
+
+    // Dry valley/channel reference.  Water bodies are disabled, but this
+    // centerline keeps the most useful low-level corridor readable in FLIR.
     if(typeof _riverCenterX==='function'){
-      const pts=[];
-      const hdgF={x:Math.sin(ac.psi),y:Math.cos(ac.psi)};
-      for(let d=400; d<=far*1.05; d+=300){ const yy=eye.y+hdgF.y*d, xx=_riverCenterX(yy); pts.push({x:xx,y:yy,z:terrainH(xx,yy)+3}); }
-      drawPolyLine(pts,'rgba(85,255,145,0.34)',1.2);
+      const pts=[]; for(let d=0; d<=far*1.05; d+=260){ const yy=eye.y+gF.y*d, xx=_riverCenterX(yy); pts.push({x:xx,y:yy,z:terrainH(xx,yy)+2}); }
+      drawPolyLine(pts,'rgba(75,255,135,0.38)',1.4);
     }
     const inf=(world&&world.infrastructure)||{};
-    for(const rd of (inf.roads||[])) drawPolyLine((rd.pts||[]).map(p=>({x:p.x,y:p.y,z:terrainH(p.x,p.y)+2})),'rgba(210,255,185,0.40)',1.0);
-    for(const pl of (inf.powerlines||[])) drawPolyLine([{x:pl.a.x,y:pl.a.y,z:terrainH(pl.a.x,pl.a.y)+18},{x:pl.b.x,y:pl.b.y,z:terrainH(pl.b.x,pl.b.y)+18}],'rgba(200,255,170,0.20)',0.8);
+    for(const rd of (inf.roads||[])) drawPolyLine((rd.pts||[]).map(p=>({x:p.x,y:p.y,z:terrainH(p.x,p.y)+2})),'rgba(210,255,185,0.46)',1.2);
+    for(const pl of (inf.powerlines||[])) drawPolyLine([{x:pl.a.x,y:pl.a.y,z:terrainH(pl.a.x,pl.a.y)+18},{x:pl.b.x,y:pl.b.y,z:terrainH(pl.b.x,pl.b.y)+18}],'rgba(200,255,170,0.24)',0.9);
     for(const br of (inf.bridges||[])){
       const len=br.len||420, hd=br.hdg||0, si=Math.sin(hd), co=Math.cos(hd);
-      drawPolyLine([{x:br.x-si*len/2,y:br.y-co*len/2,z:terrainH(br.x-si*len/2,br.y-co*len/2)+6},{x:br.x+si*len/2,y:br.y+co*len/2,z:terrainH(br.x+si*len/2,br.y+co*len/2)+6}],'rgba(235,255,200,0.52)',1.3);
+      drawPolyLine([{x:br.x-si*len/2,y:br.y-co*len/2,z:terrainH(br.x-si*len/2,br.y-co*len/2)+6},{x:br.x+si*len/2,y:br.y+co*len/2,z:terrainH(br.x+si*len/2,br.y+co*len/2)+6}],'rgba(235,255,200,0.58)',1.5);
     }
 
+    // A few threat / target highlights, but kept subtle so the geography remains primary.
     const markTarget=(obj,label,col)=>{ if(!obj||obj.destroyed) return; const p=proj({x:obj.x,y:obj.y,z:terrainH(obj.x,obj.y)+8}); if(!inFrame(p)) return; ctx.strokeStyle=col; ctx.lineWidth=1.2; ctx.strokeRect(p.x-6,p.y-6,12,12); ctx.fillStyle=col; ctx.font='7px "Courier New"'; ctx.textAlign='left'; ctx.fillText(label,p.x+8,p.y+2); };
     if(world.gndLock && !world.gndLock.destroyed) markTarget(world.gndLock,'DESIG',C_HOT);
-    else { const gm=world.groundMovers.find(g=>!g.destroyed&&!g.underground&&distTo(g.x,g.y)<far*0.95); if(gm) markTarget(gm, gm.kind==='TEL'?'TEL':'MOVE', C_ORG); }
+    else {
+      const gm=world.groundMovers.find(g=>!g.destroyed&&!g.underground&&distTo(g.x,g.y)<far*0.95); if(gm) markTarget(gm, gm.kind==='TEL'?'TEL':'MOVE', C_ORG);
+    }
 
+    // sensor sweep sparkle and reference symbology
     const scanY=y0 + (((world.t*0.42)%1)*VH);
-    ctx.strokeStyle='rgba(120,255,150,0.18)'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(x0,scanY); ctx.lineTo(x0+VW,scanY); ctx.stroke();
-    ctx.strokeStyle='rgba(120,255,150,0.055)'; ctx.beginPath(); ctx.moveTo(cx,y0); ctx.lineTo(cx,y0+VH); ctx.stroke();
+    ctx.strokeStyle='rgba(120,255,150,0.20)'; ctx.lineWidth=1.2; ctx.beginPath(); ctx.moveTo(x0,scanY); ctx.lineTo(x0+VW,scanY); ctx.stroke();
+    ctx.strokeStyle='rgba(120,255,150,0.18)'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(cx,y0); ctx.lineTo(cx,y0+VH); ctx.stroke();
     ctx.restore();
 
+    // HUD-like overlay for ownship reference while keeping the terrain image dominant.
     ctx.strokeStyle=C_GREEN; ctx.lineWidth=1; ctx.strokeRect(x0,y0,VW,VH);
-    const hs=12, hg=5, hcy=y0+VH*0.59;
+    const hs=12, hg=5, hcy=y0+VH*0.63;
     ctx.strokeStyle=C_HOT; ctx.lineWidth=1.1; ctx.beginPath(); ctx.moveTo(cx-hs,hcy); ctx.lineTo(cx-hg,hcy); ctx.moveTo(cx+hg,hcy); ctx.lineTo(cx+hs,hcy); ctx.moveTo(cx,hcy-hs); ctx.lineTo(cx,hcy-hg); ctx.moveTo(cx,hcy+hg); ctx.lineTo(cx,hcy+hs); ctx.stroke();
-    ctx.strokeStyle='rgba(168,255,192,0.70)'; ctx.lineWidth=1.2; ctx.beginPath(); ctx.moveTo(cx, y0+VH-22); ctx.lineTo(cx-9,y0+VH-8); ctx.lineTo(cx,y0+VH-12); ctx.lineTo(cx+9,y0+VH-8); ctx.stroke();
+    ctx.strokeStyle='rgba(168,255,192,0.70)'; ctx.lineWidth=1.2; ctx.beginPath(); ctx.moveTo(cx, y0+VH-24); ctx.lineTo(cx-9,y0+VH-10); ctx.lineTo(cx,y0+VH-14); ctx.lineTo(cx+9,y0+VH-10); ctx.stroke();
 
     const agl=Math.max(0, ac.pos.z-terrainH(ac.pos.x,ac.pos.y));
     const hdg=((ac.psi*RAD)%360+360)%360;
-    ctx.fillStyle=C_GREEN; ctx.font='bold 10px "Courier New"'; ctx.textAlign='left'; ctx.fillText('LANTIRN FLIR', 6, 14);
+    ctx.fillStyle=C_GREEN; ctx.font='bold 11px "Courier New"'; ctx.textAlign='left'; ctx.fillText('LANTIRN FLIR', 6, 14);
     ctx.textAlign='right'; ctx.fillText('R'+rangeNM+'  '+mode, W-6, 14);
-    ctx.textAlign='center'; ctx.font='8px "Courier New"'; ctx.fillText('FORWARD RAYCAST NAV VIDEO', W/2, y0-6);
+    ctx.textAlign='center'; ctx.font='9px "Courier New"'; ctx.fillText('FORWARD LOOK  LOW-LEVEL NAV', W/2, y0-6);
     ctx.textAlign='left'; ctx.fillText('HDG '+String(Math.round(hdg)).padStart(3,'0')+'  AGL '+Math.round(agl)+'M', x0, H-12);
     ctx.textAlign='right'; ctx.fillText('DIP '+Math.round(dip*RAD)+'°  LLTV', x0+VW, H-12);
   }
