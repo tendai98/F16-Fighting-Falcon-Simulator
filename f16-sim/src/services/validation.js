@@ -29,9 +29,17 @@ function safeString(value, max = config.limits.stringLength) {
   return String(value == null ? '' : value).slice(0, max);
 }
 
+function assertSafeObjectKeys(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  for (const key of Object.keys(value)) {
+    if (FORBIDDEN_KEYS.has(key)) throw bad(`${label} contains a forbidden object key`);
+    if (key.length > config.limits.keyLength) throw bad(`${label} contains an object key that is too long`);
+  }
+}
+
 function sanitizeDeep(value, ctx, depth = 0) {
   if (ctx.nodes++ > config.limits.deepNodes) throw bad('Replay payload is too complex');
-  if (depth > 18) throw bad('Replay payload nesting is too deep');
+  if (depth > config.limits.deepDepth) throw bad('Replay payload nesting is too deep');
 
   if (value === null || value === undefined) return null;
   const t = typeof value;
@@ -41,12 +49,7 @@ function sanitizeDeep(value, ctx, depth = 0) {
     return Math.round(value * 1000000) / 1000000;
   }
   if (t === 'string') return safeString(value);
-  if (Array.isArray(value)) {
-    if (value.length > Math.max(config.limits.snapshots, config.limits.events, 250000)) {
-      throw bad('Replay array exceeds allowed size');
-    }
-    return value.map(v => sanitizeDeep(v, ctx, depth + 1));
-  }
+  if (Array.isArray(value)) return value.map(v => sanitizeDeep(v, ctx, depth + 1));
   if (t !== 'object') return null;
 
   const out = {};
@@ -58,41 +61,47 @@ function sanitizeDeep(value, ctx, depth = 0) {
   return out;
 }
 
-function validateReplayShape(replay) {
-  if (!replay || typeof replay !== 'object') throw bad('Missing replay payload');
+function normalizeReplayEnvelope(replay) {
+  if (!replay || typeof replay !== 'object' || Array.isArray(replay)) throw bad('Missing replay payload');
+  assertSafeObjectKeys(replay, 'Replay payload');
+
   if (!Array.isArray(replay.snapshots) || replay.snapshots.length < 1) throw bad('Replay must include snapshots');
   if (replay.snapshots.length > config.limits.snapshots) throw bad('Replay has too many snapshots');
-  if (replay.events && !Array.isArray(replay.events)) throw bad('Replay events must be an array');
-  if ((replay.events || []).length > config.limits.events) throw bad('Replay has too many events');
 
-  let lastT = -1;
-  for (let i = 0; i < replay.snapshots.length; i++) {
-    const s = replay.snapshots[i] || {};
-    const t = finiteNumber(s.t, i === 0 ? 0 : lastT);
-    if (t < -0.1) throw bad('Replay snapshot timestamp is invalid');
-    if (t + 0.5 < lastT) throw bad('Replay snapshots must be ordered by time');
-    if (t > config.limits.replayDurationSec + 2) throw bad('Replay duration exceeds server limit');
-    lastT = t;
-  }
+  if (replay.events == null) replay.events = [];
+  if (!Array.isArray(replay.events)) throw bad('Replay events must be an array');
+  if (replay.events.length > config.limits.events) throw bad('Replay has too many events');
 
-  for (const ev of replay.events || []) {
-    const t = finiteNumber(ev && ev.t, 0);
-    if (t < -0.1 || t > config.limits.replayDurationSec + 2) throw bad('Replay event timestamp is invalid');
-    if (ev && ev.type && String(ev.type).length > 64) throw bad('Replay event type is too long');
-  }
+  // Do not recursively validate/sanitize every snapshot/event by default. Large
+  // mission replays can be tens of MB and hundreds of thousands of nested
+  // values. Keep upload validation to cheap envelope checks; deeper validation
+  // remains available behind VALIDATE_REPLAY_DEEP for diagnostics/hardening.
+  if (!config.limits.validateReplayDeep) return replay;
+
+  const ctx = { nodes: 0 };
+  return sanitizeDeep(replay, ctx, 0);
 }
 
-function normalizeSubmission(body) {
+function replayLastTimestamp(replay) {
+  const snapshots = replay && replay.snapshots || [];
+  const lastSnapshot = snapshots[snapshots.length - 1] || {};
+  return finiteNumber(lastSnapshot.t, 0);
+}
+
+function normalizeSubmission(body, opts = {}) {
   const source = body && body.record ? body.record : body;
   if (!source || typeof source !== 'object' || Array.isArray(source)) throw bad('Invalid replay submission');
+  assertSafeObjectKeys(source, 'Replay submission');
 
   const player = source.player || {};
+  assertSafeObjectKeys(player, 'Replay player');
   const alias = normalizeAlias(player.alias || source.alias);
   const country = normalizeCountry(player.country || source.country);
   if (!/^[A-Z0-9]{1,16}$/.test(alias)) throw bad('Alias must be 1-16 letters/numbers');
   if (!/^[A-Z]{2}$/.test(country)) throw bad('Country must be a 2-letter code');
 
   const missionIn = source.mission || {};
+  assertSafeObjectKeys(missionIn, 'Replay mission');
   const level = Math.trunc(finiteNumber(missionIn.level || source.level || 1, 1));
   if (level < 1 || level > 5) throw bad('Mission level must be 1, 2, 3, 4, or 5');
 
@@ -100,11 +109,8 @@ function normalizeSubmission(body) {
   const outcomeRaw = String(missionIn.outcome || source.outcome || 'LOSS').toUpperCase().replace(/[^A-Z]/g, '');
   const outcome = OUTCOMES.has(outcomeRaw) ? outcomeRaw : (outcomeRaw === 'SUCCESS' ? 'WIN' : 'LOSS');
 
-  const ctx = { nodes: 0 };
-  const replay = sanitizeDeep(source.replay, ctx, 0);
-  validateReplayShape(replay);
-
-  const durationFromSnapshots = finiteNumber(replay.snapshots[replay.snapshots.length - 1].t, 0);
+  const replay = normalizeReplayEnvelope(source.replay);
+  const durationFromSnapshots = replayLastTimestamp(replay);
   const durationSec = Math.min(config.limits.replayDurationSec, Math.max(0, finiteNumber(missionIn.durationSec, durationFromSnapshots) || durationFromSnapshots));
 
   const record = {
@@ -124,11 +130,12 @@ function normalizeSubmission(body) {
       replayVersion: Math.trunc(finiteNumber(replay.version, 0)),
       tickRate: finiteNumber(replay.tickRate, 10),
       snapshotCount: replay.snapshots.length,
-      eventCount: (replay.events || []).length
+      eventCount: replay.events.length,
+      validationMode: config.limits.validateReplayDeep ? 'deep' : 'envelope'
     }
   };
 
-  const byteLength = Buffer.byteLength(JSON.stringify(record), 'utf8');
+  const byteLength = Number(opts.rawBodyLength || 0) || Buffer.byteLength(JSON.stringify(record), 'utf8');
   if (byteLength > config.limits.replayBytes) throw bad('Replay payload exceeds server byte limit');
   record.client.byteLength = byteLength;
   return record;

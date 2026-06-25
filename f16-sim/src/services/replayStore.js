@@ -2,6 +2,7 @@
 
 const { db, FieldValue } = require('../firebase');
 const { config } = require('../config');
+const { logger } = require('../logger');
 const { encodeRecord, decodeRecord } = require('./replayCodec');
 
 function asIso(value) {
@@ -60,12 +61,23 @@ async function hasCompleteReplayPayload(id) {
   return actual === expected;
 }
 
-async function saveReplay(record, summary) {
+async function saveReplay(record, summary, opts = {}) {
   const encoded = encodeRecord(record);
   const now = FieldValue.serverTimestamp();
   const summaryRef = db.collection(config.firestore.summaries).doc(record.id);
   const blobRef = db.collection(config.firestore.blobs).doc(record.id);
   const batch = db.batch();
+
+  if (config.logging.replayStore) logger.info('[f16-api] replay firestore write prepared', {
+    requestId: opts.requestId || '',
+    id: record.id,
+    summaryCollection: config.firestore.summaries,
+    blobCollection: config.firestore.blobs,
+    chunkCount: encoded.chunks.length,
+    byteLength: encoded.byteLength,
+    compressedByteLength: encoded.compressedByteLength,
+    base64Length: encoded.base64Length
+  });
 
   batch.set(summaryRef, {
     ...summary,
@@ -98,7 +110,30 @@ async function saveReplay(record, summary) {
     batch.set(blobRef.collection('chunks').doc(id), { index, data: chunk });
   });
 
-  await batch.commit();
+  try {
+    await batch.commit();
+  } catch (err) {
+    logger.error('[f16-api] replay firestore write failed', {
+      requestId: opts.requestId || '',
+      id: record.id,
+      code: err && err.code,
+      message: err && err.message,
+      chunkCount: encoded.chunks.length,
+      byteLength: encoded.byteLength,
+      compressedByteLength: encoded.compressedByteLength,
+      base64Length: encoded.base64Length
+    });
+    err.stage = err.stage || 'firestore-commit';
+    throw err;
+  }
+
+  if (config.logging.replayStore) logger.info('[f16-api] replay firestore write committed', {
+    requestId: opts.requestId || '',
+    id: record.id,
+    chunkCount: encoded.chunks.length,
+    compressedByteLength: encoded.compressedByteLength
+  });
+
   return { summary: cleanSummary({ ...summary, chunkCount: encoded.chunks.length, storage: 'firestore-gzip-chunks' }), storage: { chunkCount: encoded.chunks.length, compressedByteLength: encoded.compressedByteLength } };
 }
 
@@ -141,7 +176,7 @@ async function getReplay(id) {
   try {
     record = decodeRecord(id, blobMeta, chunkDocs);
   } catch (err) {
-    console.warn('[f16-api] replay decode failed', id, err && err.message ? err.message : err);
+    logger.warn('[f16-api] replay decode failed', { id, message: err && err.message ? err.message : String(err) });
     return null;
   }
   record.syncStatus = 'synced';

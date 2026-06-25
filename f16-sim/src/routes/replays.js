@@ -4,16 +4,74 @@ const express = require('express');
 const { normalizeSubmission, newReplayId } = require('../services/validation');
 const { computeVerifiedScore } = require('../services/scoring');
 const { saveReplay, listReplays, getReplay } = require('../services/replayStore');
+const { config } = require('../config');
+const { logger } = require('../logger');
 
 const router = express.Router();
+
+function describeSubmission(body, rawBodyLength) {
+  const source = body && body.record ? body.record : body;
+  const replay = source && source.replay;
+  const snapshots = replay && Array.isArray(replay.snapshots) ? replay.snapshots : [];
+  const events = replay && Array.isArray(replay.events) ? replay.events : [];
+  const mission = source && source.mission ? source.mission : {};
+  const player = source && source.player ? source.player : {};
+  const firstSnapshot = snapshots[0] || {};
+  const lastSnapshot = snapshots[snapshots.length - 1] || {};
+
+  return {
+    rawBodyBytes: rawBodyLength || 0,
+    bodyKeys: source && typeof source === 'object' ? Object.keys(source).slice(0, 24) : [],
+    clientReplayId: source && source.id || '',
+    createdAt: source && source.createdAt || '',
+    aliasLength: player.alias ? String(player.alias).length : 0,
+    country: player.country || '',
+    missionLevel: mission.level,
+    missionOutcome: mission.outcome,
+    missionDurationSec: mission.durationSec,
+    replayVersion: replay && replay.version,
+    tickRate: replay && replay.tickRate,
+    snapshotCount: snapshots.length,
+    eventCount: events.length,
+    firstSnapshotT: firstSnapshot.t,
+    lastSnapshotT: lastSnapshot.t
+  };
+}
+
+function attachUploadContext(err, stage, diagnostics) {
+  err.uploadStage = err.uploadStage || stage;
+  err.uploadDiagnostics = err.uploadDiagnostics || diagnostics;
+  return err;
+}
 
 router.get('/health', (req, res) => {
   res.json({ ok: true, service: 'f16-replay-api', version: 1, time: new Date().toISOString() });
 });
 
 router.post('/replays', async (req, res, next) => {
+  let stage = 'received';
+  const diagnostics = describeSubmission(req.body, req.rawBodyLength);
+  if (config.logging.replayUploads) logger.info('[f16-api] replay upload received', { requestId: req.id, diagnostics });
+
   try {
-    const record = normalizeSubmission(req.body);
+    stage = 'normalization';
+    const record = normalizeSubmission(req.body, { rawBodyLength: req.rawBodyLength });
+
+    if (config.logging.replayUploads) logger.info('[f16-api] replay upload accepted', {
+      requestId: req.id,
+      clientReplayId: diagnostics.clientReplayId,
+      alias: record.player.alias,
+      country: record.player.country,
+      level: record.mission.level,
+      outcome: record.mission.outcome,
+      durationSec: record.mission.durationSec,
+      snapshotCount: record.client.snapshotCount,
+      eventCount: record.client.eventCount,
+      byteLength: record.client.byteLength,
+      validationMode: record.client.validationMode
+    });
+
+    stage = 'scoring';
     const id = newReplayId();
     const createdAt = new Date().toISOString();
     const score = computeVerifiedScore(record);
@@ -40,10 +98,27 @@ router.post('/replays', async (req, res, next) => {
       moderationStatus: 'approved'
     };
 
-    const saved = await saveReplay(record, summary);
-    res.status(201).json({ ok: true, id, summary: saved.summary, score, storage: saved.storage });
+    stage = 'firestore-save';
+    const saved = await saveReplay(record, summary, { requestId: req.id });
+
+    if (config.logging.replayUploads) logger.info('[f16-api] replay upload saved', {
+      requestId: req.id,
+      id,
+      clientReplayId: diagnostics.clientReplayId,
+      score: score.total,
+      storage: saved.storage
+    });
+
+    res.status(201).json({ ok: true, id, summary: saved.summary, score, storage: saved.storage, requestId: req.id });
   } catch (err) {
-    next(err);
+    logger.warn('[f16-api] replay upload failed', {
+      requestId: req.id,
+      stage,
+      status: err.statusCode || err.status || 500,
+      message: err.message,
+      diagnostics
+    });
+    next(attachUploadContext(err, stage, diagnostics));
   }
 });
 

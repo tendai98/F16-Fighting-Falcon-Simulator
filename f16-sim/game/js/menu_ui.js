@@ -154,7 +154,7 @@ var MenuUI = {
           '<div class="pilot-form">'+
             '<label>ALIAS<input id="pilot-alias" maxlength="16" value="'+this.escape(alias)+'" autocomplete="off" spellcheck="false"><span>Forced uppercase. A-Z and 0-9 only. Max 16 characters.</span></label>'+
             '<label>COUNTRY<select id="pilot-country">'+opts+'</select><span>Stored as a 2-letter country code.</span></label>'+
-            '<div class="save-status" id="debrief-status">Replay uploads to backend only.</div>'+
+            '<div class="save-status" id="debrief-status">Ready to save mission result.</div>'+
             '<button data-action="continue">CONTINUE</button>'+
             '<button data-action="watch-current" class="secondary">WATCH REPLAY</button>'+
             '<button data-action="main-menu" class="secondary">MAIN MENU</button>'+
@@ -199,13 +199,14 @@ var MenuUI = {
     var p = this.savedDebriefRecord ? Promise.resolve(this.savedDebriefRecord) : GameFlow.completeDebrief(info);
     p.then(function(record){
       self.savedDebriefRecord = record;
-      if (status) status.textContent = 'Mission uploaded to backend.';
+      if (status) status.textContent = 'Mission result saved.';
       if (next === 'watch') {
         if (record && record.id) GameFlow.watchReplayById(record.id);
-        else if (status) status.textContent = 'Mission uploaded, but replay id was not returned.';
+        else if (status) status.textContent = 'Mission result saved, but replay id was not returned.';
       }
       else GameFlow.returnToMenu();
     }).catch(function(err){
+      try{ if (window.F16Log) F16Log('error', '[f16-replay] debrief save failed', err && err.cause ? { message:err.message, cause:err.cause } : err); }catch(e){}
       if (status) status.textContent = 'Unable to save mission result: '+(err && err.message ? err.message : 'storage error');
     });
   },

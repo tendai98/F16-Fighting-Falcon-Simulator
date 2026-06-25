@@ -151,6 +151,18 @@ var GameFlow = {
       rec.mission.difficultyName = DIFFS[world.difficulty || 0].name;
     }
     world._pendingReplayRecord = rec;
+    try{
+      if (window.F16Log) F16Log('info', '[f16-replay] debrief upload requested', {
+        id:rec.id || '',
+        alias:rec.player && rec.player.alias || '',
+        country:rec.player && rec.player.country || '',
+        level:rec.mission && rec.mission.level,
+        outcome:rec.mission && rec.mission.outcome,
+        durationSec:rec.mission && rec.mission.durationSec,
+        snapshotCount:rec.replay && rec.replay.snapshots ? rec.replay.snapshots.length : 0,
+        eventCount:rec.replay && rec.replay.events ? rec.replay.events.length : 0
+      });
+    }catch(e){}
     return ReplayStore.save(rec).then(function(saved){
       // The browser must not retain full replay payloads after a successful
       // backend upload. Keep only compact backend metadata for debrief UI.
@@ -158,6 +170,9 @@ var GameFlow = {
       world._pendingReplaySummary = saved;
       world._pendingReplaySaved = true;
       return saved;
+    }).catch(function(err){
+      try{ if (window.F16Log) F16Log('error', '[f16-replay] debrief upload rejected', err && err.cause ? { message:err.message, cause:err.cause } : err); }catch(e){}
+      throw err;
     });
   },
 

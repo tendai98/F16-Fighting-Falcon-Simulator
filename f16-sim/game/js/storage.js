@@ -14,6 +14,81 @@ var ReplaySettings={
 };
 
 function _rsClone(o){ try{return JSON.parse(JSON.stringify(o));}catch(e){return o;} }
+function _rsLogLevelValue(level){
+  var map = { silent:0, error:1, warn:2, info:3, debug:4 };
+  var key = String(level || '').toLowerCase();
+  return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : map.error;
+}
+function _rsClientLogLevel(){
+  try{
+    var forced = (window.F16_CLIENT_LOG_LEVEL || '').toString().trim().toLowerCase();
+    if(forced) return forced;
+  }catch(e){}
+  try{
+    var stored = (localStorage.getItem('f16_client_log_level') || '').trim().toLowerCase();
+    if(stored) return stored;
+  }catch(e){}
+  try{
+    if(window.F16_REPLAY_DEBUG_LOGS === true) return 'info';
+  }catch(e){}
+  try{
+    var debug = (localStorage.getItem('f16_replay_debug_logs') || '').trim();
+    if(/^(1|true|yes|on)$/i.test(debug)) return 'info';
+  }catch(e){}
+  return 'error';
+}
+function _rsLog(level, msg, data){
+  try{
+    if(_rsLogLevelValue(_rsClientLogLevel()) < _rsLogLevelValue(level)) return;
+    var c = window.console;
+    if(c && c[level]) c[level](msg, data || '');
+  }catch(e){}
+}
+function _rsBodyLength(body){
+  if(!body) return 0;
+  if(typeof body === 'string') return body.length;
+  try{ return JSON.stringify(body).length; }catch(e){ return 0; }
+}
+function _rsDescribeError(err){
+  err = err || {};
+  return {
+    name: err.name || '',
+    message: err.message || String(err || 'error'),
+    status: err.status || 0,
+    statusText: err.statusText || '',
+    requestId: err.requestId || (err.response && err.response.requestId) || '',
+    stage: err.stage || (err.response && err.response.stage) || '',
+    response: err.response || null,
+    responseText: err.responseText || '',
+    request: err.request || null
+  };
+}
+function _rsDescribeRecord(rec){
+  rec = rec || {};
+  var replay = rec.replay || {};
+  var snapshots = Array.isArray(replay.snapshots) ? replay.snapshots : [];
+  var events = Array.isArray(replay.events) ? replay.events : [];
+  var mission = rec.mission || {};
+  var player = rec.player || {};
+  var first = snapshots[0] || {};
+  var last = snapshots[snapshots.length-1] || {};
+  return {
+    id: rec.id || '',
+    createdAt: rec.createdAt || '',
+    alias: player.alias || '',
+    country: player.country || '',
+    level: mission.level,
+    difficultyName: mission.difficultyName || '',
+    outcome: mission.outcome || '',
+    durationSec: mission.durationSec,
+    replayVersion: replay.version,
+    tickRate: replay.tickRate,
+    snapshotCount: snapshots.length,
+    eventCount: events.length,
+    firstSnapshotT: first.t,
+    lastSnapshotT: last.t
+  };
+}
 function _rsBase(){
   var raw='';
   try{ raw = (window.F16_API_BASE_URL || '').trim(); }catch(e){}
@@ -28,7 +103,9 @@ function _rsFetchJson(url, opts, timeoutMs){
   timeoutMs = timeoutMs || 6500;
   if(typeof fetch !== 'function') return Promise.reject(new Error('fetch unavailable'));
   var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-  var to = ctl ? setTimeout(function(){ try{ctl.abort();}catch(e){} }, timeoutMs) : null;
+  var didTimeout = false;
+  var method = String(opts.method || 'GET').toUpperCase();
+  var to = ctl ? setTimeout(function(){ didTimeout = true; try{ctl.abort();}catch(e){} }, timeoutMs) : null;
   opts.headers = Object.assign({'Accept':'application/json'}, opts.headers || {});
   if(opts.body && !opts.headers['Content-Type']) opts.headers['Content-Type']='application/json';
   if(ctl) opts.signal = ctl.signal;
@@ -36,17 +113,30 @@ function _rsFetchJson(url, opts, timeoutMs){
   return fetch(url, opts).then(function(res){
     if(to) clearTimeout(to);
     return res.text().then(function(txt){
+      var requestId = '';
+      try{ requestId = res.headers && res.headers.get ? (res.headers.get('x-request-id') || '') : ''; }catch(e){}
       var json = {};
       if(txt){ try{ json = JSON.parse(txt); }catch(e){ json = { ok:false, error:'Invalid backend response' }; } }
       if(!res.ok || json.ok === false){
         var err = new Error(json.error || ('HTTP '+res.status));
         err.status = res.status;
+        err.statusText = res.statusText || '';
+        err.requestId = requestId || json.requestId || '';
         err.response = json;
+        err.responseText = txt ? txt.slice(0, 2000) : '';
+        err.request = { method:method, url:url, timeoutMs:timeoutMs, bodyBytes:_rsBodyLength(opts.body) };
+        _rsLog('error', '[f16-replay] API request failed', _rsDescribeError(err));
         throw err;
       }
       return json;
     });
-  }).catch(function(err){ if(to) clearTimeout(to); throw err; });
+  }).catch(function(err){
+    if(to) clearTimeout(to);
+    if(didTimeout && err && err.name === 'AbortError') err.message = 'Request timed out after '+timeoutMs+'ms';
+    if(err && !err.request) err.request = { method:method, url:url, timeoutMs:timeoutMs, bodyBytes:_rsBodyLength(opts.body) };
+    if(!err || !err.response) _rsLog('error', '[f16-replay] API/network request failed', _rsDescribeError(err));
+    throw err;
+  });
 }
 function _rsMetaFromRecord(r){
   r = r || {};
@@ -79,8 +169,8 @@ function _rsCleanupLegacyBrowserReplayCache(){
 
 var ApiReplayStore = {
   timeoutMs:6500,
-  uploadTimeoutMs:16000,
-  healthTimeoutMs:2200,
+  uploadTimeoutMs:60000,
+  healthTimeoutMs:8000,
   _lastProbeAt:0,
   _online:null,
   _lastError:'',
@@ -113,7 +203,9 @@ var ApiReplayStore = {
       if(self._online) self._scheduleRetry(250);
       return self._online;
     }).catch(function(err){
-      self._online=false; self._lastError=(err&&err.message)||'backend unavailable'; self._lastProbeAt=Date.now(); self._probePromise=null; return false;
+      self._online=false; self._lastError=(err&&err.message)||'backend unavailable'; self._lastProbeAt=Date.now(); self._probePromise=null;
+      if(force) _rsLog('warn', '[f16-replay] backend health probe failed', { base:self.base() || 'same-origin', error:_rsDescribeError(err) });
+      return false;
     });
     return this._probePromise;
   },
@@ -130,7 +222,21 @@ var ApiReplayStore = {
   _upload:function(rec){
     var self=this, u=this.url('/api/replays');
     if(!u && u !== '') return Promise.reject(new Error('backend disabled'));
-    return _rsFetchJson(u, { method:'POST', body:JSON.stringify(rec) }, this.uploadTimeoutMs).then(function(j){
+    var body;
+    try{ body = JSON.stringify(rec); }
+    catch(stringifyErr){
+      _rsLog('error', '[f16-replay] replay upload JSON serialization failed', { replay:_rsDescribeRecord(rec), error:_rsDescribeError(stringifyErr) });
+      return Promise.reject(stringifyErr);
+    }
+
+    _rsLog('info', '[f16-replay] replay upload start', {
+      url:u || '/api/replays',
+      timeoutMs:this.uploadTimeoutMs,
+      bodyBytes:body.length,
+      replay:_rsDescribeRecord(rec)
+    });
+
+    return _rsFetchJson(u, { method:'POST', body:body }, this.uploadTimeoutMs).then(function(j){
       var summary = j.summary || {};
       var saved = {
         id: summary.id || j.id || rec.id,
@@ -151,7 +257,20 @@ var ApiReplayStore = {
       // Intentionally do not return or retain saved.replay here. Full replay
       // payloads are fetched from the backend only when WATCH is selected.
       self._online=true; self._lastError=''; self._lastProbeAt=Date.now();
+      _rsLog('info', '[f16-replay] replay upload succeeded', {
+        requestId:j.requestId || '',
+        id:saved.id,
+        score:saved.score && saved.score.total !== undefined ? saved.score.total : saved.score,
+        storage:j.storage || null,
+        replay:_rsDescribeRecord(rec)
+      });
       return saved;
+    }).catch(function(err){
+      _rsLog('error', '[f16-replay] replay upload failed', {
+        replay:_rsDescribeRecord(rec),
+        error:_rsDescribeError(err)
+      });
+      throw err;
     });
   },
 
@@ -190,17 +309,20 @@ var ApiReplayStore = {
       ready.forEach(function(p){
         chain=chain.then(function(){
           return self._upload(p.record).then(function(){
+            _rsLog('info', '[f16-replay] pending replay upload succeeded', { id:p.record && p.record.id, tries:p.tries });
             self._pending=self._pending.filter(function(x){ return x !== p; });
           }).catch(function(err){
             p.tries += 1;
             p.error = err && err.message || String(err || 'upload failed');
             p.nextAt = Date.now() + Math.min(60000, 5000 * p.tries);
+            _rsLog('warn', '[f16-replay] pending replay upload retry failed', { id:p.record && p.record.id, tries:p.tries, nextAt:p.nextAt, error:_rsDescribeError(err) });
           });
         });
       });
       return chain;
     }).catch(function(err){
       self._lastError=err&&err.message || 'backend unavailable';
+      _rsLog('warn', '[f16-replay] pending replay sync blocked', { pending:self._pending.length, error:_rsDescribeError(err) });
     }).then(function(){
       self._syncing=false;
       if(self._pending.length){
@@ -222,6 +344,11 @@ var ApiReplayStore = {
       self._queuePending(rec, err);
       var e = new Error('Replay upload failed; retrying in memory while this page remains open. '+self._lastError);
       e.cause = err;
+      _rsLog('error', '[f16-replay] replay save failed and was queued for retry', {
+        pending:self._pending.length,
+        replay:_rsDescribeRecord(rec),
+        error:_rsDescribeError(err)
+      });
       throw e;
     });
   },
@@ -256,6 +383,8 @@ var ReplayStore = ApiReplayStore;
 var LocalReplayStore = null;
 var HybridReplayStore = null;
 
+window.F16Log=_rsLog;
+window.F16DescribeReplayError=_rsDescribeError;
 window.ReplaySettings=ReplaySettings;
 window.ApiReplayStore=ApiReplayStore;
 window.ReplayStore=ReplayStore;
