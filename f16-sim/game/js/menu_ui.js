@@ -129,8 +129,8 @@ var MenuUI = {
     this.refreshLevel();
   },
   refreshBackendStatus:function(){
-    // Backend/local sync is intentionally silent for players.
-    // The storage layer still probes and uploads pending mission records in the background.
+    // Replay storage is backend-only. The client may retry a failed upload
+    // in memory while the page remains open, but it never caches replay files.
   },
 
 
@@ -154,7 +154,7 @@ var MenuUI = {
           '<div class="pilot-form">'+
             '<label>ALIAS<input id="pilot-alias" maxlength="16" value="'+this.escape(alias)+'" autocomplete="off" spellcheck="false"><span>Forced uppercase. A-Z and 0-9 only. Max 16 characters.</span></label>'+
             '<label>COUNTRY<select id="pilot-country">'+opts+'</select><span>Stored as a 2-letter country code.</span></label>'+
-            '<div class="save-status" id="debrief-status">Mission result saves automatically.</div>'+
+            '<div class="save-status" id="debrief-status">Replay uploads to backend only.</div>'+
             '<button data-action="continue">CONTINUE</button>'+
             '<button data-action="watch-current" class="secondary">WATCH REPLAY</button>'+
             '<button data-action="main-menu" class="secondary">MAIN MENU</button>'+
@@ -199,8 +199,11 @@ var MenuUI = {
     var p = this.savedDebriefRecord ? Promise.resolve(this.savedDebriefRecord) : GameFlow.completeDebrief(info);
     p.then(function(record){
       self.savedDebriefRecord = record;
-      if (status) status.textContent = 'Mission saved.';
-      if (next === 'watch') GameFlow.playReplay(record);
+      if (status) status.textContent = 'Mission uploaded to backend.';
+      if (next === 'watch') {
+        if (record && record.id) GameFlow.watchReplayById(record.id);
+        else if (status) status.textContent = 'Mission uploaded, but replay id was not returned.';
+      }
       else GameFlow.returnToMenu();
     }).catch(function(err){
       if (status) status.textContent = 'Unable to save mission result: '+(err && err.message ? err.message : 'storage error');
@@ -214,7 +217,14 @@ var MenuUI = {
     modal.innerHTML = '<div class="game-card browser-card"><div class="browser-head"><div><div class="game-kicker">SCOREBOARD / REPLAYS</div><h2>PAST MISSIONS</h2></div><button data-action="close-browser">CLOSE</button></div><div class="replay-table-wrap"><div class="empty-replay">Loading...</div></div></div>';
     if (window.GameFlow) { GameFlow.replayBrowserReturnState = GameFlow.state; GameFlow.set(GAME_STATES.REPLAY_BROWSER, { keepPause:true }); }
     var self = this;
-    ReplayStore.list().then(function(list){ self.renderReplayList(list); }).catch(function(){ self.renderReplayList([]); });
+    ReplayStore.list().then(function(list){ self.renderReplayList(list); }).catch(function(err){ self.renderReplayError(err); });
+  },
+
+  renderReplayError:function(err){
+    var wrap = document.querySelector('#modal-browser .replay-table-wrap');
+    if (!wrap) return;
+    var msg = err && err.message ? err.message : 'Backend replay service unavailable';
+    wrap.innerHTML = '<div class="empty-replay">Unable to load backend replays: '+this.escape(msg)+'</div>';
   },
 
   renderReplayList:function(list){

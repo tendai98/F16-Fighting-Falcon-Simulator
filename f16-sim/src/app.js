@@ -8,7 +8,6 @@ const rateLimit = require('express-rate-limit');
 const { config } = require('./config');
 const { router: replayRouter } = require('./routes/replays');
 
-
 function createCors() {
   const allowed = config.corsOrigins;
   if (!allowed.length) return cors({ origin: false });
@@ -24,8 +23,6 @@ function createCors() {
 
 function createApp() {
   const app = express();
-  app.use(express.static("game"))
-
   if (config.security.trustProxy) app.set('trust proxy', 1);
 
   app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));

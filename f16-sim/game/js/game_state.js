@@ -73,6 +73,7 @@ var GameFlow = {
     if (window.ScoreTracker) ScoreTracker.start();
     if (window.ReplayRecorder){ if(training) ReplayRecorder.active=false; else ReplayRecorder.start(); }
     world._pendingReplayRecord = null;
+    world._pendingReplaySummary = null;
     world._pendingReplaySaved = false;
     world.paused = false;
   },
@@ -90,6 +91,7 @@ var GameFlow = {
     if (window.ScoreTracker) ScoreTracker.start();
     if (window.ReplayRecorder) ReplayRecorder.active=false;
     world._pendingReplayRecord = null;
+    world._pendingReplaySummary = null;
     world._pendingReplaySaved = false;
   },
 
@@ -99,6 +101,7 @@ var GameFlow = {
     if (window.ScoreTracker) ScoreTracker.start();
     if (window.ReplayRecorder){ if(this.state===GAME_STATES.FLIGHT_SCHOOL) ReplayRecorder.active=false; else ReplayRecorder.start(); }
     world._pendingReplayRecord = null;
+    world._pendingReplaySummary = null;
     world._pendingReplaySaved = false;
     world.paused = false;
   },
@@ -110,7 +113,7 @@ var GameFlow = {
     this.lastOutcomeText = txt || world.outcomeReason || '';
     if (this.state === GAME_STATES.FLIGHT_SCHOOL){
       if (window.ReplayRecorder) ReplayRecorder.active=false;
-      world._pendingReplayRecord = null; world._pendingReplaySaved = false;
+      world._pendingReplayRecord = null; world._pendingReplaySummary = null; world._pendingReplaySaved = false;
       if (window.ScoreTracker) ScoreTracker.lastScore = null;
       if (typeof clearRuntimeState === 'function') clearRuntimeState({ keepMessage:false, clearProjectiles:true, pauseAudio:true });
       if (typeof endTutorial === 'function') endTutorial();
@@ -122,6 +125,7 @@ var GameFlow = {
     if (window.ScoreTracker) this.lastScore = ScoreTracker.finish(this.lastOutcome, this.lastOutcomeText);
     else this.lastScore = { total:0, breakdown:{} };
     if (window.ReplayRecorder) world._pendingReplayRecord = ReplayRecorder.stop({ outcome:this.lastOutcome, reason:this.lastOutcomeText });
+    world._pendingReplaySummary = null;
     world._pendingReplaySaved = false;
     if (typeof clearRuntimeState === 'function') clearRuntimeState({ keepMessage:false, clearProjectiles:true, pauseAudio:true });
     this.set(GAME_STATES.DEBRIEF, { keepPause:true });
@@ -129,6 +133,7 @@ var GameFlow = {
   },
 
   completeDebrief: function(player){
+    if (world._pendingReplaySaved && world._pendingReplaySummary) return Promise.resolve(world._pendingReplaySummary);
     var rec = world._pendingReplayRecord;
     if (!rec && window.ReplayRecorder) rec = ReplayRecorder.stop({ outcome:this.lastOutcome || world.outcome || 'LOSS', reason:this.lastOutcomeText || world.outcomeReason || '' });
     if (!rec) return Promise.reject(new Error('No replay record available'));
@@ -146,9 +151,11 @@ var GameFlow = {
       rec.mission.difficultyName = DIFFS[world.difficulty || 0].name;
     }
     world._pendingReplayRecord = rec;
-    if (world._pendingReplaySaved) return Promise.resolve(rec);
     return ReplayStore.save(rec).then(function(saved){
-      world._pendingReplayRecord = saved;
+      // The browser must not retain full replay payloads after a successful
+      // backend upload. Keep only compact backend metadata for debrief UI.
+      world._pendingReplayRecord = null;
+      world._pendingReplaySummary = saved;
       world._pendingReplaySaved = true;
       return saved;
     });

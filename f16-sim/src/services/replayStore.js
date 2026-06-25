@@ -28,8 +28,36 @@ function cleanSummary(doc) {
     eventCount: d.eventCount || 0,
     verified: d.verified === true,
     moderationStatus: d.moderationStatus || 'approved',
+    storage: d.storage || '',
+    chunkCount: d.chunkCount || undefined,
     syncStatus: 'synced'
   };
+}
+
+async function chunkCount(blobRef) {
+  try {
+    const countSnap = await blobRef.collection('chunks').count().get();
+    return countSnap.data().count || 0;
+  } catch (err) {
+    // Older Admin SDKs may not expose aggregation count(). Use a very small
+    // metadata-only fallback: verify at least one chunk exists without reading
+    // the whole replay payload. Full count verification still happens on GET.
+    const one = await blobRef.collection('chunks').limit(1).select().get();
+    return one.empty ? 0 : null;
+  }
+}
+
+async function hasCompleteReplayPayload(id) {
+  if (!id) return false;
+  const blobRef = db.collection(config.firestore.blobs).doc(id);
+  const blobSnap = await blobRef.get();
+  if (!blobSnap.exists) return false;
+  const meta = blobSnap.data() || {};
+  const expected = Number(meta.chunkCount || 0);
+  if (!Number.isFinite(expected) || expected < 1) return false;
+  const actual = await chunkCount(blobRef);
+  if (actual === null) return true;
+  return actual === expected;
 }
 
 async function saveReplay(record, summary) {
@@ -46,7 +74,9 @@ async function saveReplay(record, summary) {
     updatedAt: now,
     verified: true,
     moderationStatus: 'approved',
-    storage: 'firestore-gzip-chunks'
+    storage: 'firestore-gzip-chunks',
+    chunkCount: encoded.chunks.length,
+    compressedByteLength: encoded.compressedByteLength
   });
 
   batch.set(blobRef, {
@@ -69,7 +99,7 @@ async function saveReplay(record, summary) {
   });
 
   await batch.commit();
-  return { summary: cleanSummary(summary), storage: { chunkCount: encoded.chunks.length, compressedByteLength: encoded.compressedByteLength } };
+  return { summary: cleanSummary({ ...summary, chunkCount: encoded.chunks.length, storage: 'firestore-gzip-chunks' }), storage: { chunkCount: encoded.chunks.length, compressedByteLength: encoded.compressedByteLength } };
 }
 
 async function listReplays(limit) {
@@ -78,7 +108,13 @@ async function listReplays(limit) {
     .orderBy('score', 'desc')
     .limit(cap)
     .get();
-  return snap.docs.map(cleanSummary).filter(r => r.moderationStatus === 'approved');
+
+  const candidates = snap.docs.map(cleanSummary).filter(r => r.moderationStatus === 'approved' && r.id);
+  const checked = await Promise.all(candidates.map(async r => {
+    const complete = await hasCompleteReplayPayload(r.id).catch(() => false);
+    return complete ? r : null;
+  }));
+  return checked.filter(Boolean);
 }
 
 async function getReplay(id) {
@@ -91,11 +127,26 @@ async function getReplay(id) {
   const blobRef = db.collection(config.firestore.blobs).doc(id);
   const blobSnap = await blobRef.get();
   if (!blobSnap.exists) return null;
-  const chunksSnap = await blobRef.collection('chunks').get();
-  const record = decodeRecord(id, blobSnap.data(), chunksSnap.docs.map(doc => ({ id: doc.id, data: doc.data() })));
+  const blobMeta = blobSnap.data() || {};
+  const expected = Number(blobMeta.chunkCount || 0);
+  if (!Number.isFinite(expected) || expected < 1) return null;
+
+  const chunksSnap = await blobRef.collection('chunks').orderBy('index').get();
+  if (chunksSnap.size !== expected) return null;
+
+  const chunkDocs = chunksSnap.docs.map(doc => ({ id: doc.id, data: doc.data() }));
+  if (chunkDocs.some(doc => !doc.data || typeof doc.data.data !== 'string' || !doc.data.data)) return null;
+
+  let record;
+  try {
+    record = decodeRecord(id, blobMeta, chunkDocs);
+  } catch (err) {
+    console.warn('[f16-api] replay decode failed', id, err && err.message ? err.message : err);
+    return null;
+  }
   record.syncStatus = 'synced';
   record.score = record.score || { total: summary.score || 0, breakdown: {} };
   return record;
 }
 
-module.exports = { saveReplay, listReplays, getReplay };
+module.exports = { saveReplay, listReplays, getReplay, hasCompleteReplayPayload };

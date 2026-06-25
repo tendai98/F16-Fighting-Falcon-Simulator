@@ -1,9 +1,11 @@
 /* =====================================================================
-   REPLAY STORAGE — IndexedDB metadata/data split, localStorage fallback
+   REPLAY STORAGE — backend-only replay source
    ---------------------------------------------------------------------
-   Scoreboard listing reads compact metadata only. Full replay payloads are
-   fetched lazily so the replay list stays fast and
-   reduces memory pressure from large mission logs.
+   The browser is not a replay database. It never stores full replay
+   missions in IndexedDB/localStorage and never falls back to browser replay
+   cache. The replay list comes from backend metadata only; a full replay is
+   fetched only when the user selects WATCH. Failed uploads are retried only
+   in memory while the current page remains open.
    ===================================================================== */
 var ReplaySettings={
   get:function(k,d){try{var v=localStorage.getItem('f16_'+k);return v===null?d:v;}catch(e){return d;}},
@@ -11,188 +13,19 @@ var ReplaySettings={
   remove:function(k){try{localStorage.removeItem('f16_'+k);}catch(e){}}
 };
 
-var ReplayStore={
-  dbName:'f16_strike_replays_v1', version:2,
-  dataStore:'replay_data', metaStore:'replay_meta', legacyStore:'replays',
-  _db:null, _ls:'f16_replays_fallback_v1',
-
-  _open:function(){
-    var self=this;
-    if(this._db) return this._db;
-    this._db=new Promise(function(res,rej){
-      if(!window.indexedDB){rej(new Error('no indexedDB'));return;}
-      var r=indexedDB.open(self.dbName,self.version);
-      r.onupgradeneeded=function(){
-        var db=r.result;
-        var hadLegacy=db.objectStoreNames.contains(self.legacyStore);
-        if(!db.objectStoreNames.contains(self.dataStore)) db.createObjectStore(self.dataStore,{keyPath:'id'});
-        if(!db.objectStoreNames.contains(self.metaStore)){
-          var m=db.createObjectStore(self.metaStore,{keyPath:'id'});
-          m.createIndex('createdAt','createdAt',{unique:false});
-          m.createIndex('score','score',{unique:false});
-        }
-        // Keep the legacy store if it already exists. Create it only for older
-        // fallback code paths in browsers that have existing v1 data.
-        if(!db.objectStoreNames.contains(self.legacyStore)) db.createObjectStore(self.legacyStore,{keyPath:'id'});
-        // Upgrade v1 single-store records into compact metadata so the first
-        // scoreboard open after this patch does not have to read full replay
-        // payloads. The full legacy records remain available for ReplayStore.get.
-        if(hadLegacy){
-          try{
-            var tx=r.transaction, legacy=tx.objectStore(self.legacyStore), meta=tx.objectStore(self.metaStore);
-            legacy.openCursor().onsuccess=function(ev){
-              var cur=ev.target.result; if(!cur) return;
-              try{ meta.put(self._meta(cur.value)); }catch(e){}
-              cur.continue();
-            };
-          }catch(e){}
-        }
-      };
-      r.onsuccess=function(){res(r.result);};
-      r.onerror=function(){rej(r.error||new Error('open failed'));};
-    });
-    return this._db;
-  },
-
-  _meta:function(r){
-    return {
-      id:r.id, createdAt:r.createdAt,
-      alias:r.player&&r.player.alias||r.alias||'', country:r.player&&r.player.country||r.country||'',
-      level:r.mission&&r.mission.level!==undefined?r.mission.level:r.level,
-      difficultyName:r.mission&&r.mission.difficultyName||r.difficultyName||'',
-      outcome:r.mission&&r.mission.outcome||r.outcome||'',
-      score:r.score&&r.score.total!==undefined?r.score.total:(r.score||0),
-      durationSec:r.mission&&r.mission.durationSec!==undefined?r.mission.durationSec:(r.durationSec||0),
-      syncStatus:r.syncStatus||'local_pending',
-      replayVersion:r.replay&&r.replay.version||r.replayVersion||0,
-      snapshotCount:r.replay&&r.replay.snapshots?r.replay.snapshots.length:(r.snapshotCount||0),
-      eventCount:r.replay&&r.replay.events?r.replay.events.length:(r.eventCount||0)
-    };
-  },
-
-  _sort:function(a){
-    return (a||[]).sort(function(x,y){return (y.score-x.score)||String(y.createdAt).localeCompare(String(x.createdAt));});
-  },
-
-  _readLS:function(){try{return JSON.parse(localStorage.getItem(this._ls)||'[]');}catch(e){return[];}},
-  _writeLS:function(a){try{localStorage.setItem(this._ls,JSON.stringify(a.slice(-50)));return Promise.resolve(true);}catch(e){return Promise.reject(e);}},
-
-  save:function(rec){
-    var self=this;
-    if(!rec) return Promise.reject(new Error('No replay record'));
-    rec.id=rec.id||('replay_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8));
-    rec.createdAt=rec.createdAt||new Date().toISOString();
-    rec.syncStatus=rec.syncStatus||'local_pending';
-    var meta=this._meta(rec);
-    return this._open().then(function(db){
-      return new Promise(function(res,rej){
-        var tx=db.transaction([self.dataStore,self.metaStore],'readwrite');
-        tx.objectStore(self.dataStore).put(rec);
-        tx.objectStore(self.metaStore).put(meta);
-        tx.oncomplete=function(){res(rec);};
-        tx.onerror=function(){rej(tx.error||new Error('save failed'));};
-        tx.onabort=function(){rej(tx.error||new Error('save aborted'));};
-      });
-    }).catch(function(){
-      var a=self._readLS().filter(function(x){return x.id!==rec.id;});
-      a.push(rec);
-      return self._writeLS(a).then(function(){return rec;});
-    });
-  },
-
-  list:function(){
-    var self=this;
-    return this._open().then(function(db){
-      return new Promise(function(res,rej){
-        var tx=db.transaction([self.metaStore,self.legacyStore],'readonly');
-        var q=tx.objectStore(self.metaStore).getAll();
-        q.onsuccess=function(){
-          var list=q.result||[];
-          if(list.length){ res(self._sort(list)); return; }
-          // One-time compatibility path for records saved by the original v1
-          // single-store implementation. This only runs when the compact meta
-          // store is empty.
-          var lq=tx.objectStore(self.legacyStore).getAll();
-          lq.onsuccess=function(){ res(self._sort((lq.result||[]).map(function(r){return self._meta(r);}))); };
-          lq.onerror=function(){ rej(lq.error); };
-        };
-        q.onerror=function(){rej(q.error);};
-      });
-    }).catch(function(){
-      return self._sort(self._readLS().map(function(r){return self._meta(r);}));
-    });
-  },
-
-  get:function(id){
-    var self=this;
-    return this._open().then(function(db){
-      return new Promise(function(res,rej){
-        var tx=db.transaction([self.dataStore,self.legacyStore],'readonly');
-        var q=tx.objectStore(self.dataStore).get(id);
-        q.onsuccess=function(){
-          if(q.result){res(q.result);return;}
-          var lq=tx.objectStore(self.legacyStore).get(id);
-          lq.onsuccess=function(){res(lq.result||null);};
-          lq.onerror=function(){rej(lq.error);};
-        };
-        q.onerror=function(){rej(q.error);};
-      });
-    }).catch(function(){return self._readLS().find(function(r){return r.id===id;})||null;});
-  },
-
-  delete:function(id){
-    var self=this;
-    return this._open().then(function(db){
-      return new Promise(function(res,rej){
-        var tx=db.transaction([self.dataStore,self.metaStore,self.legacyStore],'readwrite');
-        tx.objectStore(self.dataStore).delete(id);
-        tx.objectStore(self.metaStore).delete(id);
-        tx.objectStore(self.legacyStore).delete(id);
-        tx.oncomplete=function(){res(true);};
-        tx.onerror=function(){rej(tx.error||new Error('delete failed'));};
-      });
-    }).catch(function(){return self._writeLS(self._readLS().filter(function(r){return r.id!==id;}));});
-  },
-
-  clear:function(){
-    var self=this;
-    return this._open().then(function(db){
-      return new Promise(function(res,rej){
-        var tx=db.transaction([self.dataStore,self.metaStore,self.legacyStore],'readwrite');
-        tx.objectStore(self.dataStore).clear();
-        tx.objectStore(self.metaStore).clear();
-        tx.objectStore(self.legacyStore).clear();
-        tx.oncomplete=function(){res(true);};
-        tx.onerror=function(){rej(tx.error||new Error('clear failed'));};
-      });
-    }).catch(function(){return self._writeLS([]);});
-  }
-};
-
-/* ---------------------------------------------------------------------
-   API + HYBRID REPLAY STORE
-   ---------------------------------------------------------------------
-   LocalReplayStore keeps the existing IndexedDB behavior. ApiReplayStore
-   talks to a clean JS backend. HybridReplayStore probes /api/health and
-   uses the backend when available, with local fallback when offline.
-   --------------------------------------------------------------------- */
-var LocalReplayStore = ReplayStore;
-
 function _rsClone(o){ try{return JSON.parse(JSON.stringify(o));}catch(e){return o;} }
 function _rsBase(){
   var raw='';
   try{ raw = (window.F16_API_BASE_URL || '').trim(); }catch(e){}
   if(!raw){ try{ raw = (localStorage.getItem('f16_api_base_url') || '').trim(); }catch(e){} }
   if(raw && /^off$/i.test(raw)) return null;
-  if(raw){ return raw.replace(/\/+$/,''); }
-  try{
-    if(location && /^https?:$/i.test(location.protocol)) return '';
-  }catch(e){}
+  if(raw) return raw.replace(/\/+$/,'');
+  try{ if(location && /^https?:$/i.test(location.protocol)) return ''; }catch(e){}
   return null;
 }
 function _rsFetchJson(url, opts, timeoutMs){
   opts = opts || {};
-  timeoutMs = timeoutMs || 4500;
+  timeoutMs = timeoutMs || 6500;
   if(typeof fetch !== 'function') return Promise.reject(new Error('fetch unavailable'));
   var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
   var to = ctl ? setTimeout(function(){ try{ctl.abort();}catch(e){} }, timeoutMs) : null;
@@ -203,26 +36,58 @@ function _rsFetchJson(url, opts, timeoutMs){
   return fetch(url, opts).then(function(res){
     if(to) clearTimeout(to);
     return res.text().then(function(txt){
-      var json = txt ? JSON.parse(txt) : {};
-      if(!res.ok || json.ok === false) throw new Error(json.error || ('HTTP '+res.status));
+      var json = {};
+      if(txt){ try{ json = JSON.parse(txt); }catch(e){ json = { ok:false, error:'Invalid backend response' }; } }
+      if(!res.ok || json.ok === false){
+        var err = new Error(json.error || ('HTTP '+res.status));
+        err.status = res.status;
+        err.response = json;
+        throw err;
+      }
       return json;
     });
   }).catch(function(err){ if(to) clearTimeout(to); throw err; });
 }
-function _rsMergeList(remote, local){
-  var m={}, out=[];
-  (remote||[]).forEach(function(r){ if(r && r.id){ r.syncStatus=r.syncStatus||'synced'; m[r.id]=1; out.push(r); } });
-  (local||[]).forEach(function(r){ if(r && r.id && !m[r.id] && r.syncStatus !== 'synced') out.push(r); });
-  return out.sort(function(a,b){ return (Number(b.score||0)-Number(a.score||0)) || String(b.createdAt||'').localeCompare(String(a.createdAt||'')); });
+function _rsMetaFromRecord(r){
+  r = r || {};
+  return {
+    id:r.id,
+    createdAt:r.createdAt || '',
+    alias:r.player&&r.player.alias||r.alias||'',
+    country:r.player&&r.player.country||r.country||'',
+    level:r.mission&&r.mission.level!==undefined?r.mission.level:r.level,
+    difficultyName:r.mission&&r.mission.difficultyName||r.difficultyName||'',
+    outcome:r.mission&&r.mission.outcome||r.outcome||'',
+    score:r.score&&r.score.total!==undefined?r.score.total:(r.score||0),
+    durationSec:r.mission&&r.mission.durationSec!==undefined?r.mission.durationSec:(r.durationSec||0),
+    replayVersion:r.replay&&r.replay.version||r.replayVersion||0,
+    snapshotCount:r.replay&&r.replay.snapshots?r.replay.snapshots.length:(r.snapshotCount||0),
+    eventCount:r.replay&&r.replay.events?r.replay.events.length:(r.eventCount||0),
+    syncStatus:r.syncStatus || 'uploading'
+  };
+}
+function _rsCleanupLegacyBrowserReplayCache(){
+  try{ localStorage.removeItem('f16_replays_fallback_v1'); }catch(e){}
+  try{ localStorage.removeItem('f16_replays_v1'); }catch(e){}
+  try{ localStorage.removeItem('f16_replay_cache'); }catch(e){}
+  try{
+    if(window.indexedDB && indexedDB.deleteDatabase){
+      indexedDB.deleteDatabase('f16_strike_replays_v1');
+    }
+  }catch(e){}
 }
 
 var ApiReplayStore = {
-  timeoutMs:5500,
-  healthTimeoutMs:1800,
+  timeoutMs:6500,
+  uploadTimeoutMs:16000,
+  healthTimeoutMs:2200,
   _lastProbeAt:0,
   _online:null,
   _lastError:'',
   _probePromise:null,
+  _pending:[],
+  _syncing:false,
+  _retryTimer:null,
 
   base:function(){ return _rsBase(); },
   enabled:function(){ return this.base() !== null && typeof fetch === 'function'; },
@@ -244,141 +109,160 @@ var ApiReplayStore = {
       return Promise.resolve(false);
     }
     this._probePromise=this.health().then(function(ok){
-      self._online=!!ok; self._lastError=''; self._lastProbeAt=Date.now(); self._probePromise=null; return self._online;
+      self._online=!!ok; self._lastError=''; self._lastProbeAt=Date.now(); self._probePromise=null;
+      if(self._online) self._scheduleRetry(250);
+      return self._online;
     }).catch(function(err){
       self._online=false; self._lastError=(err&&err.message)||'backend unavailable'; self._lastProbeAt=Date.now(); self._probePromise=null; return false;
     });
     return this._probePromise;
   },
 
-  status:function(){ return { online:!!this._online, checked:this._online!==null, base:this.base() || 'same-origin', error:this._lastError || '' }; },
+  status:function(){ return { online:!!this._online, checked:this._online!==null, base:this.base() || 'same-origin', error:this._lastError || '', pending:this._pending.length }; },
 
-  save:function(rec){
+  _prepareRecord:function(rec){
+    if(!rec) throw new Error('No replay record');
+    rec.id=rec.id||('client_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8));
+    rec.createdAt=rec.createdAt||new Date().toISOString();
+    return rec;
+  },
+
+  _upload:function(rec){
     var self=this, u=this.url('/api/replays');
     if(!u && u !== '') return Promise.reject(new Error('backend disabled'));
-    return _rsFetchJson(u, { method:'POST', body:JSON.stringify(rec) }, Math.max(this.timeoutMs, 12000)).then(function(j){
-      var saved = _rsClone(rec) || {};
+    return _rsFetchJson(u, { method:'POST', body:JSON.stringify(rec) }, this.uploadTimeoutMs).then(function(j){
       var summary = j.summary || {};
-      saved.id = summary.id || j.id || saved.id;
-      saved.createdAt = summary.createdAt || saved.createdAt || new Date().toISOString();
-      saved.syncStatus = 'synced';
-      if(summary.alias || summary.country) saved.player = { alias:summary.alias || (saved.player&&saved.player.alias)||'', country:summary.country || (saved.player&&saved.player.country)||'' };
-      if(saved.mission){
-        saved.mission.level = summary.level || saved.mission.level;
-        saved.mission.difficultyName = summary.difficultyName || saved.mission.difficultyName;
-        saved.mission.outcome = summary.outcome || saved.mission.outcome;
-        saved.mission.durationSec = summary.durationSec || saved.mission.durationSec;
-      }
-      if(j.score) saved.score = j.score;
+      var saved = {
+        id: summary.id || j.id || rec.id,
+        createdAt: summary.createdAt || rec.createdAt || new Date().toISOString(),
+        player: {
+          alias: summary.alias || (rec.player&&rec.player.alias) || '',
+          country: summary.country || (rec.player&&rec.player.country) || ''
+        },
+        mission: {
+          level: summary.level || (rec.mission&&rec.mission.level) || 1,
+          difficultyName: summary.difficultyName || (rec.mission&&rec.mission.difficultyName) || '',
+          outcome: summary.outcome || (rec.mission&&rec.mission.outcome) || '',
+          durationSec: summary.durationSec || (rec.mission&&rec.mission.durationSec) || 0
+        },
+        score: j.score || rec.score || { total:summary.score || 0, breakdown:{} },
+        syncStatus: 'synced'
+      };
+      // Intentionally do not return or retain saved.replay here. Full replay
+      // payloads are fetched from the backend only when WATCH is selected.
       self._online=true; self._lastError=''; self._lastProbeAt=Date.now();
       return saved;
     });
   },
 
-  list:function(){
-    var u=this.url('/api/replays');
-    if(!u && u !== '') return Promise.reject(new Error('backend disabled'));
-    return _rsFetchJson(u, { method:'GET' }, this.timeoutMs).then(function(j){ return Array.isArray(j) ? j : (j.replays || []); });
+  _queuePending:function(rec, err){
+    var id = rec && rec.id;
+    if(!id) return;
+    for(var i=0;i<this._pending.length;i++){
+      if(this._pending[i].record && this._pending[i].record.id === id){
+        this._pending[i].error = err && err.message || String(err || 'upload failed');
+        this._pending[i].tries += 1;
+        this._pending[i].nextAt = Date.now() + Math.min(60000, 5000 * this._pending[i].tries);
+        this._scheduleRetry(this._pending[i].nextAt - Date.now());
+        return;
+      }
+    }
+    this._pending.push({ record:rec, tries:1, error:err && err.message || String(err || 'upload failed'), nextAt:Date.now()+5000 });
+    this._scheduleRetry(5000);
   },
 
-  get:function(id){
-    var u=this.url('/api/replays/'+encodeURIComponent(id));
-    if(!u && u !== '') return Promise.reject(new Error('backend disabled'));
-    return _rsFetchJson(u, { method:'GET' }, Math.max(this.timeoutMs, 12000)).then(function(j){ return j.record || j.replay || j; });
-  }
-};
-
-var HybridReplayStore = {
-  _syncing:false,
-  probe:function(force){
+  _scheduleRetry:function(delay){
     var self=this;
-    return ApiReplayStore.probe(force).then(function(ok){ if(ok) return self.syncPending().then(function(){ return ok; }); return ok; });
+    if(this._retryTimer) return;
+    this._retryTimer=setTimeout(function(){ self._retryTimer=null; self.syncPending(); }, Math.max(250, delay||250));
   },
-  status:function(){ return ApiReplayStore.status(); },
-
-  save:function(rec){
-    var self=this;
-    if(!rec) return Promise.reject(new Error('No replay record'));
-    var originalId = rec.id;
-    // Always attempt the backend on mission completion. If it is unavailable,
-    // save locally and let the silent background sync remove the local copy
-    // once upload succeeds.
-    return ApiReplayStore.probe(true).then(function(ok){
-      if(!ok) throw new Error(ApiReplayStore._lastError || 'backend unavailable');
-      return ApiReplayStore.save(rec).then(function(saved){
-        var ids=[];
-        if(originalId) ids.push(originalId);
-        if(saved && saved.id && ids.indexOf(saved.id)<0) ids.push(saved.id);
-        var chain=Promise.resolve();
-        ids.forEach(function(id){ chain=chain.then(function(){ return LocalReplayStore.delete(id).catch(function(){ return true; }); }); });
-        return chain.then(function(){ return saved; });
-      });
-    }).catch(function(){
-      rec = rec || {}; rec.syncStatus = rec.syncStatus || 'local_pending';
-      return LocalReplayStore.save(rec).then(function(savedLocal){
-        try{ setTimeout(function(){ self.probe(true); }, 15000); }catch(e){}
-        return savedLocal;
-      });
-    });
-  },
-
-  list:function(){
-    var self=this;
-    return ApiReplayStore.probe(false).then(function(ok){
-      if(!ok) throw new Error(ApiReplayStore._lastError || 'backend unavailable');
-      return self.syncPending().then(function(){
-        return Promise.all([ApiReplayStore.list(), LocalReplayStore.list().catch(function(){return[];})]).then(function(pair){
-          return _rsMergeList(pair[0], pair[1]);
-        });
-      });
-    }).catch(function(){ return LocalReplayStore.list(); });
-  },
-
-  get:function(id){
-    return ApiReplayStore.probe(false).then(function(ok){
-      if(!ok) throw new Error(ApiReplayStore._lastError || 'backend unavailable');
-      return ApiReplayStore.get(id);
-    }).catch(function(){ return LocalReplayStore.get(id); });
-  },
-
-  delete:function(id){ return LocalReplayStore.delete(id); },
-  clear:function(){ return LocalReplayStore.clear(); },
 
   syncPending:function(){
     var self=this;
-    if(this._syncing) return Promise.resolve(false);
-    if(!ApiReplayStore._online) return Promise.resolve(false);
+    if(this._syncing || !this._pending.length) return Promise.resolve(false);
+    if(!this.enabled()) return Promise.resolve(false);
     this._syncing=true;
-    return LocalReplayStore.list().then(function(list){
-      var pending=(list||[]).filter(function(m){ return m && m.id && m.syncStatus !== 'synced'; }).slice(0,5);
+    return this.probe(true).then(function(ok){
+      if(!ok) throw new Error(self._lastError || 'backend unavailable');
+      var now=Date.now();
+      var ready=self._pending.filter(function(p){ return !p.nextAt || p.nextAt <= now; }).slice(0,3);
       var chain=Promise.resolve();
-      pending.forEach(function(meta){
+      ready.forEach(function(p){
         chain=chain.then(function(){
-          return LocalReplayStore.get(meta.id).then(function(rec){
-            if(!rec) return null;
-            var oldId = rec.id;
-            return ApiReplayStore.save(rec).then(function(saved){
-              var ids=[];
-              if(oldId) ids.push(oldId);
-              if(saved && saved.id && ids.indexOf(saved.id)<0) ids.push(saved.id);
-              var del=Promise.resolve();
-              ids.forEach(function(id){ del=del.then(function(){ return LocalReplayStore.delete(id).catch(function(){ return true; }); }); });
-              return del.then(function(){ return saved; });
-            }).catch(function(){ return null; });
+          return self._upload(p.record).then(function(){
+            self._pending=self._pending.filter(function(x){ return x !== p; });
+          }).catch(function(err){
+            p.tries += 1;
+            p.error = err && err.message || String(err || 'upload failed');
+            p.nextAt = Date.now() + Math.min(60000, 5000 * p.tries);
           });
         });
       });
       return chain;
-    }).then(function(){ self._syncing=false; return true; }).catch(function(){ self._syncing=false; return false; });
-  }
+    }).catch(function(err){
+      self._lastError=err&&err.message || 'backend unavailable';
+    }).then(function(){
+      self._syncing=false;
+      if(self._pending.length){
+        var next=self._pending.reduce(function(a,p){ return Math.min(a, p.nextAt || Date.now()+5000); }, Date.now()+15000);
+        self._scheduleRetry(Math.max(1000, next-Date.now()));
+      }
+      return true;
+    });
+  },
+
+  save:function(rec){
+    var self=this;
+    try{ rec=this._prepareRecord(rec); }catch(e){ return Promise.reject(e); }
+    return this.probe(true).then(function(ok){
+      if(!ok) throw new Error(self._lastError || 'backend unavailable');
+      return self._upload(rec);
+    }).catch(function(err){
+      self._lastError=err && err.message || 'upload failed';
+      self._queuePending(rec, err);
+      var e = new Error('Replay upload failed; retrying in memory while this page remains open. '+self._lastError);
+      e.cause = err;
+      throw e;
+    });
+  },
+
+  list:function(){
+    var self=this, u=this.url('/api/replays');
+    if(!u && u !== '') return Promise.reject(new Error('backend disabled'));
+    return _rsFetchJson(u, { method:'GET' }, this.timeoutMs).then(function(j){
+      self._online=true; self._lastError=''; self._lastProbeAt=Date.now();
+      var list = Array.isArray(j) ? j : (j.replays || []);
+      return (list||[]).filter(function(r){ return r && r.id; });
+    });
+  },
+
+  get:function(id){
+    var self=this, u=this.url('/api/replays/'+encodeURIComponent(id));
+    if(!u && u !== '') return Promise.reject(new Error('backend disabled'));
+    return _rsFetchJson(u, { method:'GET' }, Math.max(this.timeoutMs, 16000)).then(function(j){
+      self._online=true; self._lastError=''; self._lastProbeAt=Date.now();
+      return j.record || j.replay || null;
+    }).catch(function(err){
+      if(err && err.status === 404) return null;
+      throw err;
+    });
+  },
+
+  delete:function(){ return Promise.reject(new Error('Replay deletion is backend-admin only')); },
+  clear:function(){ return Promise.reject(new Error('Replay clearing is backend-admin only')); }
 };
 
+var ReplayStore = ApiReplayStore;
+var LocalReplayStore = null;
+var HybridReplayStore = null;
+
 window.ReplaySettings=ReplaySettings;
-window.LocalReplayStore=LocalReplayStore;
 window.ApiReplayStore=ApiReplayStore;
+window.ReplayStore=ReplayStore;
+window.LocalReplayStore=LocalReplayStore;
 window.HybridReplayStore=HybridReplayStore;
-window.ReplayStore=HybridReplayStore;
 try{
+  _rsCleanupLegacyBrowserReplayCache();
   setTimeout(function(){ if(window.ReplayStore && ReplayStore.probe) ReplayStore.probe(true); }, 80);
   setInterval(function(){ if(window.ReplayStore && ReplayStore.probe) ReplayStore.probe(true); }, 60000);
 }catch(e){}
