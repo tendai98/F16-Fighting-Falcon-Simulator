@@ -375,6 +375,7 @@ const HELP_REF = {
       ['BURN-THROUGH', 'Range at which a jammed SAM\u2019s radar overpowers the jam and reacquires you \u2014 it shrinks the more you stay back, grows as you close in.'],
       ['FREQ HOP', 'A capable SAM switching scan frequency to defeat your jamming after repeated denial.'],
       ['FCR', 'Fire Control Radar.'],
+      ['G LIMIT', 'Flight-control G limiter cue. The jet soft-limits near 6.5G and hard-limits around 9G; unload to recover energy.'],
       ['GMT', 'Ground Moving Target.'],
       ['HARM', 'High-speed Anti-Radiation Missile (AGM-88).'],
       ['HAD', 'HARM Attack Display.'],
@@ -517,6 +518,12 @@ function updateFlightHUD(){
 
 /* ---- main loop ---- */
 let last = 0, _mfdTick = 0;
+
+function drawGVisualEffects(r3){
+  // G-limit feedback is HUD-only. Tunnel vision, blur and blackout overlays
+  // have been removed so training and dogfighting keep a clear sight picture.
+}
+
 function loop(now){
   let dt = (now - last)/1000; last = now;
   if (dt > 0.05) dt = 0.05;            // clamp big frame gaps
@@ -761,7 +768,7 @@ function updateTutorial(dt){
 }
 
 /* ---- scenario setups ---- */
-function tutResetEZ(){ world.difficulty=0; restartMission(); world._tutorial=true; world._tutFire=false; }
+function tutResetEZ(){ world.difficulty=0; restartMission(); world._tutorial=true; world._tutFire=false; world._gunOnlyTraining=false; }
 /* targeting lessons must NOT sit inside a SAM ring (the RWR alone confuses a new
    pilot) — strip the air defences so they can learn the strike loop in peace */
 function clearThreats(){
@@ -841,6 +848,35 @@ function setupGun(){ tutResetEZ(); clearThreats();
   world.selectedStation=1; world.stations.forEach(st=>st.sel=(st.id===1));
   if (MFDS.center) MFDS.center.setPage('FCR');
 }
+function resetGTrainingState(){
+  if (world.gPhys){ world.gPhys.fatigue=0; world.gPhys.blackout=0; world.gPhys.tunnel=0; world.gPhys.blur=0; world.gPhys.control=1; world.gPhys.cue=''; world.gPhys.locT=0; }
+}
+function setupGLimit(){ tutResetEZ(); clearThreats();
+  const px=6400, py=17400, alt=5200;
+  world.bandits=[]; world.airLock=null; world.gndLock=null; world.designated=false;
+  const drone={x:px,y:py,alt:Math.max(terrainH(px,py)+1100,alt),psi:Math.PI,spd:185,hp:2.5,kind:'TRAINING DRONE',name:'G-LIMIT DRONE',cmFlares:0,cmChaff:0,docile:true,trainingDocile:true};
+  world.bandits.push(drone); world.airLock=drone;
+  placeJetFacing(px,py,6200,alt-80);
+  world.ac.tas=330; world.ac.throttle=0.86; world.ac.gamma=0; world.ac.theta=0; world.ac.phi=0; world.ac.alpha=0;
+  resetGTrainingState();
+  world.masterMode='A-A'; world.masterArm='SIM';
+  world.selectedStation=1; world.stations.forEach(st=>st.sel=(st.id===1));
+  if (MFDS.center) MFDS.center.setPage('FCR');
+}
+function setupGunDefense(){ tutResetEZ(); clearThreats();
+  const px=4200, py=15800, alt=4700;
+  world.bandits=[]; world.airLock=null; world.gndLock=null; world.designated=false;
+  const bandit={x:px,y:py,alt:Math.max(terrainH(px,py)+1100,alt),psi:Math.PI*1.05,spd:235,hp:1.25,kind:'HOSTILE',name:'GUN DEF TRAINER',trainingShooter:true,cmFlares:6,cmChaff:4,aiState:'CHASE',_stateUntil:0};
+  world.bandits.push(bandit); world.airLock=bandit;
+  placeJetFacing(px,py,4200,alt-120);
+  world.ac.tas=265; world.ac.throttle=0.82; world.ac.gamma=0; world.ac.theta=0; world.ac.phi=0; world.ac.alpha=0;
+  world.masterMode='DGFT'; world.masterArm='SAFE'; world._gunOnlyTraining=true;
+  world.selectedStation=1; world.stations.forEach(st=>{ st.sel=(st.id===1); if(st.kind==='aa') st.qty=0; });
+  world.ac.flares=30; world.ac.chaff=20;
+  if (MFDS.center) MFDS.center.setPage('FCR');
+  if (MFDS.left) MFDS.left.setPage('HSD');
+}
+
 function setupLowLevel(){ tutResetEZ();
   const s = isolateSAM('SA-3', 4.25, 1800);          // far start: time to descend and set up manually
   if (s){
@@ -933,6 +969,27 @@ const L_GUN = [
   {t:'RED = SHOOT', key:'SPACE', point:{hud:'steer'}, b:'When the reticle turns red, hold SPACE for a short tracking burst. The bullets inherit your aircraft motion, so smooth pursuit kills faster than spraying in a hard pull.', done:()=>world.bandits.every(b=>b.hp<=0)||world.bandits.some(b=>b._lastGunHitT&&world.t-b._lastGunHitT<1.0)},
   {t:'GUNS COMPLETE', point:null, b:'Good gun kills come from controlled closure, a steady target track and short bursts when the LCOS is red. Yellow is range. Red is shoot.'},
 ];
+const L_GLIMIT = [
+  {t:'HIGH-G TARGET TRACKING', point:null, b:'This lesson uses a docile air target so you can feel the FLCS G limiter while tracking something real. There are no blackout, blur or heartbeat effects — just HUD cues, energy bleed and control discipline.'},
+  {t:'TRACK THE DRONE', point:{hud:'steer'}, b:'A training drone is ahead. Keep it in the HUD and use smooth bank and pitch. The goal is not to shoot yet — just stay behind it.', live:()=>{const b=world.airLock||world.bandits.find(x=>x.hp>0); return b?('RNG '+(distTo(b.x,b.y)/NM).toFixed(2)+' NM  G '+world.ac.g.toFixed(1)):'NO TARGET';}, done:()=>!!world.airLock && distTo(world.airLock.x,world.airLock.y)<2.8*NM},
+  {t:'PULL TO 5G', key:'S', point:{hud:'steer'}, b:'While tracking the target, pull smoothly until the HUD G readout passes 5G. Notice the turn tightens and speed starts bleeding.', live:()=>('G '+world.ac.g.toFixed(1)+'  SPD '+Math.round(world.ac.tas*KT)+' kt'), done:()=>world.ac.g>5.0},
+  {t:'FIND THE LIMIT', key:'S', point:{hud:'mode'}, b:'Keep tracking and pull harder for a moment. Around the top of the envelope the HUD shows HIGH G, then G LIMIT. The jet will not keep giving more pull forever.', live:()=>{const gp=world.gPhys||{}; return (gp.cue||'NORMAL')+'  G '+world.ac.g.toFixed(1)+'  SPD '+Math.round(world.ac.tas*KT)+' kt';}, done:()=>!!(world.gPhys&&world.gPhys.cue)},
+  {t:'UNLOAD AND REGAIN ENERGY', key:'W', point:{hud:'steer'}, b:'Relax the pull or press W. Let G fall below about 3G and watch speed recover. Dogfights are about managing energy, not just pulling harder.', live:()=>('G '+world.ac.g.toFixed(1)+'  SPD '+Math.round(world.ac.tas*KT)+' kt'), done:()=>world.ac.g<3.0},
+  {t:'OPTIONAL GUN TRACK', key:'SPACE', point:{hud:'steer'}, b:'Now use what you learned: track smoothly and fire a short gun burst when the reticle looks stable. Smooth pursuit beats yanking into the limiter.', done:()=>world.bandits.every(b=>b.hp<=0)||world.bandits.some(b=>b._lastGunHitT&&world.t-b._lastGunHitT<1.0)},
+  {t:'G LIMIT COMPLETE', point:null, b:'High G is useful for quick nose position, but it costs speed. Track, pull briefly, unload, and re-enter the fight with energy.'},
+];
+
+const L_DOGGUN = [
+  {t:'DOGFIGHT — GUNS & DEFENCE', point:null, b:'This lesson is gun-only for you. The training bandit is medium-hard and can launch air-to-air missiles, so you will practice both gun kills and missile defence.'},
+  {t:'DGFT + ARM', key:'M / B', point:{hud:'mode'}, b:'Set DGFT or A-A mode and Master Arm ARM/SIM. The cannon fires with SPACE. Your A-A missile stations are empty in this lesson — use the gun.', done:()=> (world.masterMode==='DGFT'||world.masterMode==='A-A') && world.masterArm!=='SAFE'},
+  {t:'LOCK / PADLOCK THE BANDIT', key:'V', point:{hud:'steer'}, b:'Press V if the bandit is not locked. Keep the target in the forward quarter and use smooth turns instead of holding the G limiter.', done:()=>!!world.airLock},
+  {t:'DEFEND THE MISSILE', key:'F / C + HARD TURN', point:{hud:'steer'}, b:'The bandit can fire. When you see MISSILE LAUNCH or a red missile track, break hard across the threat and use flares/chaff. Weave and unload after the break to recover speed.', live:()=>{const red=world.sams.filter(s=>s.team==='RED').length; return 'RED MSL '+red+'  FLR '+world.ac.flares+'  CHF '+world.ac.chaff+'  G '+world.ac.g.toFixed(1);}, done:()=>world.sams.some(s=>s.team==='RED') || world.ac.flares<30 || world.ac.chaff<20},
+  {t:'GET INTO GUN RANGE', point:{hud:'steer'}, b:'After defending, turn back in. Close to about 1.5 NM or less. Use lag pursuit first, then tighten for the shot.', live:()=>{const b=world.airLock||world.bandits.find(x=>x.hp>0); return b?('RNG '+(distTo(b.x,b.y)/NM).toFixed(2)+' NM'):'NO TARGET';}, done:()=>{const sol=(typeof bestGunSolution==='function')&&bestGunSolution(); return !!sol && sol.range < 1.6*NM;}},
+  {t:'GUN SOLUTION', key:'SPACE', point:{hud:'steer'}, b:'When the LCOS turns red or settles over the target, hold SPACE for a short burst. If you miss, unload, regain speed and try again.', live:()=>{const sol=(typeof bestGunSolution==='function')&&bestGunSolution(); return sol?('RNG '+(sol.range/NM).toFixed(2)+' NM  G '+world.ac.g.toFixed(1)):'NO SOL';}, done:()=>world.bandits.every(b=>b.hp<=0)||world.bandits.some(b=>b._lastGunHitT&&world.t-b._lastGunHitT<1.0)},
+  {t:'DOGFIGHT COMPLETE', point:null, b:'Good gun defence is a rhythm: defend missiles with hard turns, weaves and countermeasures, unload to regain energy, then re-attack with a smooth gun track.'},
+];
+
+
 const L_LOW = [
   {t:'LANTIRN LOW-LEVEL', point:null, b:'Training flights are not scored or saved as replays. You start far from an SA-3 so you have time to set up, descend, terrain-mask, then fire the HARM.'},
   {t:'OPEN LANTIRN', point:{osb:'B3',mfd:'left',page:'HSD',cap:'HSD — B3 LANT'}, b:'On the left HSD, press B3 LANT. Do not rush the descent yet; first bring up the forward-looking terrain picture.', done:()=>Object.keys(MFDS).some(k=>MFDS[k].page==='LANT')},
@@ -1007,10 +1064,12 @@ const LESSONS = [
   {id:'def',    tag:'5 \u00b7 DEFENCE',  name:'DEFENCE \u2014 Threat Page & Countermeasures', desc:'Read the THREAT/EWS page, then beat the missile with flares/chaff + a hard break.', setup:setupDefense, steps:L_DEF},
   {id:'aa',     tag:'6 \u00b7 A-A MSL',  name:'AIR-TO-AIR \u2014 Missile Engagement',  desc:'Lock a bandit on radar and take a missile shot.',     setup:setupAA,      steps:L_AA},
   {id:'aagun',  tag:'7 \u00b7 A-A GUN',  name:'AIR-TO-AIR \u2014 Gun Employment',      desc:'Use the LCOS reticle, range cues and cannon bursts.', setup:setupGun,     steps:L_GUN},
-  {id:'low',    tag:'8 \u00b7 LANTIRN', name:'LANTIRN \u2014 Low-Level SA-3 Attack', desc:'Use LANTIRN, radar-horizon masking and HARM tactics at low level.', setup:setupLowLevel, steps:L_LOW},
-  {id:'dlnk',   tag:'9 \u00b7 DATALINK', name:'DATALINK \u2014 AWACS Picture',         desc:'Tune the datalink and read the shared picture.',      setup:setupDatalink, steps:L_DLNK},
-  {id:'ecm',    tag:'10 \u00b7 ECM',     name:'ECM \u2014 Jamming an SA-3',            desc:'Jam a basic SAM\u2019s radar and learn burn-through.',    setup:setupECM,     steps:L_ECM},
-  {id:'ewstk',  tag:'11 \u00b7 EW STRIKE', name:'EW STRIKE \u2014 Attack Under Jamming', desc:'Jam a fixed-frequency 2-band SA-6, penetrate under cover, and HARM it from inside the ring.', setup:setupECMStrike, steps:L_ECMSTK},
+  {id:'doggun', tag:'8 \u00b7 DOGFIGHT', name:'DOGFIGHT \u2014 Guns & Defence',        desc:'Gun-only dogfight against a missile-shooting trainer.', setup:setupGunDefense, steps:L_DOGGUN},
+  {id:'glimit', tag:'9 \u00b7 HIGH-G',  name:'HIGH-G \u2014 Energy & G-Limit',         desc:'Track a docile target while learning the G limiter and energy bleed.', setup:setupGLimit, steps:L_GLIMIT},
+  {id:'low',    tag:'10 \u00b7 LANTIRN', name:'LANTIRN \u2014 Low-Level SA-3 Attack', desc:'Use LANTIRN, radar-horizon masking and HARM tactics at low level.', setup:setupLowLevel, steps:L_LOW},
+  {id:'dlnk',   tag:'11 \u00b7 DATALINK', name:'DATALINK \u2014 AWACS Picture',         desc:'Tune the datalink and read the shared picture.',      setup:setupDatalink, steps:L_DLNK},
+  {id:'ecm',    tag:'12 \u00b7 ECM',     name:'ECM \u2014 Jamming an SA-3',            desc:'Jam a basic SAM\u2019s radar and learn burn-through.',    setup:setupECM,     steps:L_ECM},
+  {id:'ewstk',  tag:'13 \u00b7 EW STRIKE', name:'EW STRIKE \u2014 Attack Under Jamming', desc:'Jam a fixed-frequency 2-band SA-6, penetrate under cover, and HARM it from inside the ring.', setup:setupECMStrike, steps:L_ECMSTK},
 ];
 let TUT_STEPS = L_BASICS;
 let TUT = { active:false, step:0, okT:0, _paused:false, lessonTag:'', lessonName:'' };

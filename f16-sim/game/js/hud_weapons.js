@@ -465,6 +465,7 @@ function updateGunFire(dt){
 }
 
 function launchAAM(){
+  if (world._gunOnlyTraining){ banner('GUN ONLY TRAINING', 1.1); return; }
   const ac = world.ac;
   const st = selectedStore();
   if (!st || st.kind!=='aa' || st.qty<=0) { banner('NO A-A MISSILE', 1.2); return; }
@@ -984,7 +985,7 @@ function banditTargetState(bd, rng, verticalAbs){
 function updateBandits(dt){
   const ac = world.ac;
   const diff = world.difficulty || 0;
-  const shooters = diff >= 2;          // HARD / ACE / AIR SUPER
+  const shooters = diff >= 2;          // HARD / ACE / AIR SUPER; training lessons can opt individual bandits in.
   const RED_CAP = 8;
   let redInAir = 0; for (const s of world.sams) if (s.team==='RED') redInAir++;
   const acFwd = {x:Math.sin(ac.psi), y:Math.cos(ac.psi)};
@@ -994,13 +995,15 @@ function updateBandits(dt){
     if (!bd.id && window.ReplayUtils) ReplayUtils.ensureIds();
     if (bd._phase===undefined) bd._phase = Math.random()*Math.PI*2;
     const hostile = bd.kind==='HOSTILE';
+    const canShoot = (shooters || !!bd.trainingShooter) && hostile;
+    const aiDiff = bd.trainingShooter ? Math.max(diff, 2) : diff;
     const dx = ac.pos.x - bd.x, dy = ac.pos.y - bd.y;
     const range2 = Math.hypot(dx,dy);
     const dz = ac.pos.z - bd.alt;
     const away = wrap2pi(Math.atan2(-dx,-dy));
     let desiredPsi = bd.psi, desiredAlt = bd.alt, targetSpeed = bd.spd || 220;
 
-    if (shooters && hostile && !world.outcome){
+    if (canShoot && !world.outcome){
       const missileThreat = incomingMissileForBandit(bd);
       if (missileThreat){ bd._defThreat=missileThreat; banditDropDefensive(bd, missileThreat); }
       if (!bd.aiState) bd.aiState = 'INTERCEPT';
@@ -1023,8 +1026,8 @@ function updateBandits(dt){
         const tx = ac.pos.x + acFwd.x * ac.tas * lead;
         const ty = ac.pos.y + acFwd.y * ac.tas * lead;
         desiredPsi = Math.atan2(tx-bd.x, ty-bd.y);
-        desiredAlt = diff>=4 ? Math.max(terrainH(bd.x,bd.y)+850, ac.pos.z + 120) : ac.pos.z + 250;
-        targetSpeed = diff>=4 ? 285 : (diff>=3 ? 270 : 250);
+        desiredAlt = aiDiff>=4 ? Math.max(terrainH(bd.x,bd.y)+850, ac.pos.z + 120) : ac.pos.z + 250;
+        targetSpeed = aiDiff>=4 ? 285 : (aiDiff>=3 ? 270 : 250);
       } else if (bd.aiState==='CHASE'){
         // Aim at the player's rear quarter instead of the exact aircraft position.
         const side = Math.sin(world.t*0.45 + bd._phase) > 0 ? 1 : -1;
@@ -1032,29 +1035,29 @@ function updateBandits(dt){
         const ty = ac.pos.y - acFwd.y*2600 - Math.sin(ac.psi)*side*700;
         desiredPsi = Math.atan2(tx-bd.x, ty-bd.y) + Math.sin(world.t*0.8+bd._phase)*0.10;
         desiredAlt = ac.pos.z + Math.sin(world.t*0.55+bd._phase)*350;
-        targetSpeed = diff>=4 ? 275 : (diff>=3 ? 255 : 240);
+        targetSpeed = aiDiff>=4 ? 275 : (aiDiff>=3 ? 255 : 240);
       } else if (bd.aiState==='EVADE'){
         const th=bd._defThreat && world.sams.indexOf(bd._defThreat)>=0 ? bd._defThreat : null;
         if (th){
           const awayM=wrap2pi(Math.atan2(bd.x-th.pos.x, bd.y-th.pos.y));
           if (isRadarMissile(th)) desiredPsi = awayM + (bd._evadeDir||1)*(Math.PI/2 + 0.18*Math.sin(world.t*1.6+bd._phase)); // notch beam
           else desiredPsi = awayM + (bd._evadeDir||1)*(0.42 + 0.22*Math.sin(world.t*1.2+bd._phase));                 // flare and drag away
-          desiredAlt = bd.alt + (bd._evadeDir||1)*(diff>=3?420:300)*Math.sin(world.t*1.15+bd._phase);
+          desiredAlt = bd.alt + (bd._evadeDir||1)*(aiDiff>=3?420:300)*Math.sin(world.t*1.15+bd._phase);
         } else {
           desiredPsi = away + (bd._evadeDir||1)*(0.55 + 0.25*Math.sin(world.t*1.1+bd._phase));
           desiredAlt = ac.pos.z + (bd._evadeDir||1)*650*Math.sin(world.t*0.7+bd._phase);
         }
-        targetSpeed = diff>=4 ? 305 : (diff>=3 ? 295 : 270);
+        targetSpeed = aiDiff>=4 ? 305 : (aiDiff>=3 ? 295 : 270);
       } else if (bd.aiState==='EXTEND'){
         desiredPsi = (bd._extendPsi!==undefined?bd._extendPsi:away) + Math.sin(world.t*0.65+bd._phase)*0.16;
         desiredAlt = ac.pos.z + Math.sin(world.t*0.35+bd._phase)*500;
-        targetSpeed = diff>=4 ? 310 : (diff>=3 ? 295 : 275);
+        targetSpeed = aiDiff>=4 ? 310 : (aiDiff>=3 ? 295 : 275);
       } else { // REATTACK
         const tx = ac.pos.x - acFwd.x*1700;
         const ty = ac.pos.y - acFwd.y*1700;
         desiredPsi = Math.atan2(tx-bd.x, ty-bd.y);
         desiredAlt = ac.pos.z + 150;
-        targetSpeed = diff>=4 ? 285 : 265;
+        targetSpeed = aiDiff>=4 ? 285 : 265;
       }
     } else {
       bd.aiState = bd.aiState || 'PATROL';
@@ -1064,7 +1067,7 @@ function updateBandits(dt){
     }
 
     const close = range2 < 2400;
-    const maxTurn = (shooters && hostile) ? (close ? 0.34 : (diff>=3 ? 0.52 : 0.44)) : 0.20;
+    const maxTurn = canShoot ? (close ? 0.34 : (aiDiff>=3 ? 0.52 : 0.44)) : 0.20;
     const dpsi = clamp(angWrap(desiredPsi-bd.psi), -maxTurn*dt, maxTurn*dt);
     bd.psi = wrap2pi(bd.psi + dpsi);
 
@@ -1072,22 +1075,22 @@ function updateBandits(dt){
     desiredAlt = clamp(desiredAlt, ground+700, 12000);
     // Avoid unrealistic top/bottom stacking at close range: extend laterally and converge altitude slowly.
     if (close && Math.abs(dz)>1800) desiredAlt = bd.alt + clamp(ac.pos.z-bd.alt, -250, 250);
-    const climbRate = shooters && hostile ? 42 : 22;
+    const climbRate = canShoot ? 42 : 22;
     bd.alt += clamp(desiredAlt-bd.alt, -climbRate*dt, climbRate*dt);
     bd.alt = Math.max(bd.alt, terrainH(bd.x,bd.y)+500);
 
     bd.spd += clamp(targetSpeed-bd.spd, -35*dt, 30*dt);
-    bd.spd = clamp(bd.spd, bd.kind==='HVA-AIR'?120:165, diff>=4?330:310);
+    bd.spd = clamp(bd.spd, bd.kind==='HVA-AIR'?120:165, aiDiff>=4?330:310);
     bd.x += Math.sin(bd.psi)*bd.spd*dt;
     bd.y += Math.cos(bd.psi)*bd.spd*dt;
 
     // Weapons employment: only in sane intercept/chase geometry, not while extending/evasive.
-    if (shooters && hostile && !world.outcome && bd.aiState!=='EXTEND' && bd.aiState!=='EVADE'){
+    if (canShoot && !world.outcome && bd.aiState!=='EXTEND' && bd.aiState!=='EVADE'){
       const rel = vsub(ac.pos, {x:bd.x, y:bd.y, z:bd.alt});
       const rng = vlen(rel);
       const fwd = { x:Math.sin(bd.psi), y:Math.cos(bd.psi), z:0 };
       const ang = Math.acos(clamp(vdot(vnorm(rel), fwd), -1, 1));
-      const cool = diff>=3 ? 8.5 : 12;
+      const cool = aiDiff>=3 ? 8.5 : 12;
       if (rng < 10*NM && rng > 1800 && Math.abs(rel.z)<2600 && ang < 26*DEG && redInAir < RED_CAP && (world.t - (bd._lastShot||-99)) > cool){
         bd._lastShot = world.t; redInAir++;
         const dir = vnorm(rel);
@@ -1151,7 +1154,11 @@ function drawCombatHUD(r3, ctx){
   const st = selectedStore();
   ctx.fillStyle=NEON; ctx.font='12px "Courier New"';
   if (st) ctx.fillText(st.wpn+'  x'+st.qty, W-70, H-50);
-  ctx.fillText('G '+ac.g.toFixed(1)+'  AOA '+ac.aoa.toFixed(0), W-70, H-34);
+  const gp=world.gPhys||{}, gCue=gp.cue||'';
+  const gAbs=Math.max(0,ac.g||1);
+  ctx.fillStyle = gCue==='G LIMIT' ? '#ffd24d' : (gCue==='HIGH G' ? '#ffcf7a' : NEON);
+  ctx.fillText('G '+gAbs.toFixed(1)+'  AOA '+ac.aoa.toFixed(0), W-70, H-34);
+  if (gCue){ ctx.font='bold 13px "Courier New"'; ctx.fillText(gCue, W-70, H-18); }
 
   /* ---- gear flag ---- */
   ctx.textAlign='center'; ctx.font='11px "Courier New"';

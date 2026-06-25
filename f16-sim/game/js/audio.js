@@ -11,7 +11,7 @@
                                   'select' 'newguy' 'win' 'loss'
      F16Audio.update(state)       continuous sounds, driven each frame:
                                   { throttle, missile, lock, lowAlt, stall,
-                                    caution, paused }
+                                    caution, gun, paused }
    ========================================================================== */
 (function(){
   const clamp = (v,a,b)=> v<a?a : v>b?b : v;
@@ -138,6 +138,12 @@
       s.caution ? startLoop('caution', 640, ()=>{
         const t=T().now(); A.beeper.triggerAttackRelease(720,0.10,t); A.beeper.triggerAttackRelease(610,0.10,t+0.12);
       }) : stopLoop('caution');
+      // G-limit feedback is visual/HUD-only.  Do not add heartbeat, breathing,
+      // blackout, or audio-muffling loops here; high-G training should not fight
+      // the existing RWR, missile, stall, gun and caution cues.
+      if (A.master && A.master.gain){ try{ A.master.gain.rampTo(A.enabled ? 0.85 : 0.0, 0.16); }catch(e){} }
+      stopLoop('highg');
+      stopLoop('gloc');
     } catch(e){}
   };
 

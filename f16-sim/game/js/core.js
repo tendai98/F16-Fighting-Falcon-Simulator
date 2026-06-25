@@ -163,6 +163,16 @@ const world = {
     flares: 30,
     chaff: 20,
   },
+  // ---- pilot high-G / FLCS feedback ----
+  gPhys: {
+    fatigue: 0,       // sustained high-G load; recovers when unloaded
+    blackout: 0,      // retained for replay/backward compatibility; not rendered
+    tunnel: 0,        // retained for replay/backward compatibility; not rendered
+    blur: 0,          // retained for replay/backward compatibility; not rendered
+    control: 1,       // no G-LOC control reduction; FLCS limiter handles the jet
+    cue: '',          // HUD cue: HIGH G / G LIMIT
+    locT: 0,
+  },
 
   // ---- runway / airbase ----
   runway: { x: 0, y: 0, len: 2400, w: 46, hdg: 0 },  // aligned to north
@@ -830,12 +840,40 @@ const FM = {
    Pulling g costs energy (induced drag), so sustained hard turns bleed speed. */
 const AERO = {
   N_K:    3.05e-4,   // load-factor availability per V^2  (slightly stronger dogfight lift)
-  NMAX:   10.2,      // structural g limit — strong but less twitchy pitch response
+  NMAX:   9.0,       // hard FLCS/structural g limit
   CD0K:   1.96e-4,   // parasite drag accel = CD0K * V^2
-  IND:    26200,     // induced drag accel = IND * n^2 / V^2
+  IND:    28600,     // induced drag accel = IND * n^2 / V^2; high-g bleeds energy
   STALL:  18*DEG,    // AoA at CLmax (display + buffet reference)
   ROT:    11*DEG,    // nose-up rotation AoA on the runway
 };
+
+
+const GLIM = {
+  SOFT: 6.5,       // normal FLCS soft limiter onset
+  HARD: 9.0,       // absolute command limit
+  WARN: 6.7,
+  LIMIT: 8.35,
+  LOC: 8.85,
+};
+
+function updateGPhysiology(ac, dt){
+  const gp = world.gPhys || (world.gPhys={fatigue:0,blackout:0,tunnel:0,blur:0,control:1,cue:'',locT:0});
+  const g = Math.max(0, ac.g || 1);
+  if (ac.onGround || world.outcome){
+    gp.fatigue = Math.max(0, (gp.fatigue||0) - dt*2.5);
+    gp.blackout = 0; gp.tunnel = 0; gp.blur = 0; gp.locT = 0; gp.control = 1; gp.cue='';
+    return;
+  }
+  // High-G feedback is now HUD/handling only: no heartbeat SFX, no tunnel
+  // vision, no blur/blackout, and no temporary G-LOC control sluggishness.
+  // Sustained G still accumulates fatigue so lessons can show energy discipline.
+  let strain = 0;
+  if (g > 5.0) strain = Math.pow((g-5.0)/3.9, 1.35);
+  if (g > GLIM.LIMIT) strain += (g-GLIM.LIMIT)*0.40;
+  gp.fatigue = clamp((gp.fatigue||0) + (strain*dt*1.15) - (g < 4.4 ? dt*1.55 : dt*0.18), 0, 8.0);
+  gp.blackout = 0; gp.tunnel = 0; gp.blur = 0; gp.locT = 0; gp.control = 1;
+  gp.cue = g>=GLIM.LIMIT ? 'G LIMIT' : (g>=GLIM.WARN ? 'HIGH G' : '');
+}
 
 function updateFlight(ac, dt){
   if (world.outcome) return;       // freeze on mission end
@@ -854,13 +892,14 @@ function updateFlight(ac, dt){
   ctrl.pitch += (input.pitch - ctrl.pitch) * k;
   ctrl.roll  += (input.roll  - ctrl.roll ) * k;
   ctrl.yaw   += (input.yaw   - ctrl.yaw  ) * k;
-  const pitchCmd = PITCH_SIGN * ctrl.pitch;
+  const gControl = (world.gPhys && world.gPhys.control!=null) ? world.gPhys.control : 1;
+  const pitchCmd = PITCH_SIGN * ctrl.pitch * gControl;
 
   /* ----- roll (same for ground checks below) ----- */
   if (ac.onGround){
     ac.phi = lerp(ac.phi, 0, 1-Math.pow(0.001,dt));      // wings level on ground
   } else {
-    ac.phi = clamp(ac.phi + ctrl.roll * FM.rollRate * dt, -125*DEG, 125*DEG);
+    ac.phi = clamp(ac.phi + ctrl.roll * FM.rollRate * gControl * dt, -125*DEG, 125*DEG);
     // Very light wing-leveler only near level flight.  Shallow/medium bank
     // angles should hold so the pilot is not fighting auto-roll during gun runs
     // or low-level route turns.
@@ -889,7 +928,7 @@ function updateFlight(ac, dt){
     ac.tas = clamp(ac.tas + dv*dt, 0, FM.vMax);
     if (braking && ac.tas < 0.6) ac.tas = 0;                         // fully parked
     ac.pos.z = groundElev; ac.vy = 0;
-    ac.g = 1; ac.aoa = ac.alpha*RAD; world._stall = false;
+    ac.g = 1; ac.aoa = ac.alpha*RAD; world._stall = false; updateGPhysiology(ac, dt);
     if (nLift >= 1.0 && ac.tas > FM.Vr*0.9){                          // unstick
       ac.onGround = false;
       ac.pos.z = groundElev + 0.6;
@@ -908,6 +947,12 @@ function updateFlight(ac, dt){
     // small gun-run / low-level corrections gentler while preserving full pull.
     const pitchEff = Math.sign(pitchCmd) * Math.pow(Math.abs(pitchCmd), 1.28);
     let nCmd = pitchEff >= 0 ? 1 + pitchEff*(AERO.NMAX-1) : 1 + pitchEff*2.2;
+    // FLCS-style G limiting: the jet eases into the limiter near 6.5G and hard
+    // caps around 9G.  Dogfight modes keep the full limit, while NAV/A-G are a
+    // touch calmer so low-level flying does not become an accidental 9G snap.
+    const gHard = (world.masterMode==='DGFT'||world.masterMode==='A-A') ? GLIM.HARD : 8.45;
+    if (nCmd > GLIM.SOFT) nCmd = GLIM.SOFT + (nCmd-GLIM.SOFT)*0.46;
+    nCmd = Math.min(nCmd, gHard);
     // Low-level bank assist: when close to terrain and banked without a pitch
     // command, feed a little extra lift so ordinary turns do not dump altitude.
     const aglNow = Math.max(0, ac.pos.z-groundElev);
@@ -917,6 +962,7 @@ function updateFlight(ac, dt){
     nCmd += bankAssist*0.78;
     const n = clamp(nCmd, -1.5, nAvail);                             // wing can't exceed nAvail -> stall
     ac.g = n;
+    updateGPhysiology(ac, dt);
     const stalled = (nCmd > nAvail + 0.15);                          // demanding more than the wing can give
     // a genuine stall: either we're commanding more lift than the wing can make,
     // or the wing can't even sustain 1 g (too slow, or too high / thin air).
