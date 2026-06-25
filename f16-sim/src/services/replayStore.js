@@ -66,7 +66,6 @@ async function saveReplay(record, summary, opts = {}) {
   const now = FieldValue.serverTimestamp();
   const summaryRef = db.collection(config.firestore.summaries).doc(record.id);
   const blobRef = db.collection(config.firestore.blobs).doc(record.id);
-  const batch = db.batch();
 
   if (config.logging.replayStore) logger.info('[f16-api] replay firestore write prepared', {
     requestId: opts.requestId || '',
@@ -79,39 +78,46 @@ async function saveReplay(record, summary, opts = {}) {
     base64Length: encoded.base64Length
   });
 
-  batch.set(summaryRef, {
-    ...summary,
-    createdAt: now,
-    createdAtIso: record.createdAt,
-    updatedAt: now,
-    verified: true,
-    moderationStatus: 'approved',
-    storage: 'firestore-gzip-chunks',
-    chunkCount: encoded.chunks.length,
-    compressedByteLength: encoded.compressedByteLength
-  });
-
-  batch.set(blobRef, {
-    id: record.id,
-    replayId: record.id,
-    encoding: 'gzip+base64+chunks',
-    chunkCount: encoded.chunks.length,
-    sha256: encoded.hash,
-    signature: encoded.signature,
-    byteLength: encoded.byteLength,
-    compressedByteLength: encoded.compressedByteLength,
-    base64Length: encoded.base64Length,
-    createdAt: now,
-    updatedAt: now
-  });
-
-  encoded.chunks.forEach((chunk, index) => {
-    const id = String(index).padStart(5, '0');
-    batch.set(blobRef.collection('chunks').doc(id), { index, data: chunk });
-  });
-
   try {
-    await batch.commit();
+    const maxWritesPerBatch = 450;
+    for (let offset = 0; offset < encoded.chunks.length; offset += maxWritesPerBatch) {
+      const batch = db.batch();
+      encoded.chunks.slice(offset, offset + maxWritesPerBatch).forEach((chunk, localIndex) => {
+        const index = offset + localIndex;
+        const id = String(index).padStart(5, '0');
+        batch.set(blobRef.collection('chunks').doc(id), { index, data: chunk });
+      });
+      await batch.commit();
+    }
+
+    // Publish metadata and scoreboard summary only after every chunk exists, so
+    // partially written very large replays do not appear in the public list.
+    const finalBatch = db.batch();
+    finalBatch.set(blobRef, {
+      id: record.id,
+      replayId: record.id,
+      encoding: 'gzip+base64+chunks',
+      chunkCount: encoded.chunks.length,
+      sha256: encoded.hash,
+      signature: encoded.signature,
+      byteLength: encoded.byteLength,
+      compressedByteLength: encoded.compressedByteLength,
+      base64Length: encoded.base64Length,
+      createdAt: now,
+      updatedAt: now
+    });
+    finalBatch.set(summaryRef, {
+      ...summary,
+      createdAt: now,
+      createdAtIso: record.createdAt,
+      updatedAt: now,
+      verified: true,
+      moderationStatus: 'approved',
+      storage: 'firestore-gzip-chunks',
+      chunkCount: encoded.chunks.length,
+      compressedByteLength: encoded.compressedByteLength
+    });
+    await finalBatch.commit();
   } catch (err) {
     logger.error('[f16-api] replay firestore write failed', {
       requestId: opts.requestId || '',

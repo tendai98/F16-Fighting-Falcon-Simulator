@@ -47,7 +47,53 @@ function _rsLog(level, msg, data){
 function _rsBodyLength(body){
   if(!body) return 0;
   if(typeof body === 'string') return body.length;
+  if(typeof Blob !== 'undefined' && body instanceof Blob) return body.size || 0;
+  if(typeof body.byteLength === 'number') return body.byteLength;
+  if(typeof body.length === 'number') return body.length;
   try{ return JSON.stringify(body).length; }catch(e){ return 0; }
+}
+function _rsUtf8Length(s){
+  try{ if(typeof TextEncoder !== 'undefined') return new TextEncoder().encode(String(s || '')).length; }catch(e){}
+  return String(s || '').length;
+}
+function _rsGzipJsonBody(json){
+  if(typeof CompressionStream === 'undefined' || typeof Blob === 'undefined' || typeof Response === 'undefined') return Promise.resolve(null);
+  try{
+    var stream = new Blob([json], { type:'application/json' }).stream().pipeThrough(new CompressionStream('gzip'));
+    return new Response(stream).blob().then(function(blob){
+      if(!blob || !blob.size) return null;
+      return {
+        body: blob,
+        encoding: 'gzip-json',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-F16-Replay-Encoding': 'gzip-json',
+          'X-F16-Replay-JSON-Bytes': String(_rsUtf8Length(json)),
+          'X-F16-Replay-Gzip-Bytes': String(blob.size)
+        }
+      };
+    }).catch(function(err){
+      _rsLog('warn', '[f16-replay] browser gzip failed; falling back to JSON upload', _rsDescribeError(err));
+      return null;
+    });
+  }catch(err){
+    _rsLog('warn', '[f16-replay] browser gzip unavailable; falling back to JSON upload', _rsDescribeError(err));
+    return Promise.resolve(null);
+  }
+}
+function _rsBuildReplayUpload(json){
+  return _rsGzipJsonBody(json).then(function(gzip){
+    if(gzip) return gzip;
+    return {
+      body: json,
+      encoding: 'json',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-F16-Replay-Encoding': 'json',
+        'X-F16-Replay-JSON-Bytes': String(_rsUtf8Length(json))
+      }
+    };
+  });
 }
 function _rsDescribeError(err){
   err = err || {};
@@ -169,7 +215,7 @@ function _rsCleanupLegacyBrowserReplayCache(){
 
 var ApiReplayStore = {
   timeoutMs:6500,
-  uploadTimeoutMs:60000,
+  uploadTimeoutMs:120000,
   healthTimeoutMs:8000,
   _lastProbeAt:0,
   _online:null,
@@ -229,14 +275,18 @@ var ApiReplayStore = {
       return Promise.reject(stringifyErr);
     }
 
-    _rsLog('info', '[f16-replay] replay upload start', {
-      url:u || '/api/replays',
-      timeoutMs:this.uploadTimeoutMs,
-      bodyBytes:body.length,
-      replay:_rsDescribeRecord(rec)
-    });
+    return _rsBuildReplayUpload(body).then(function(upload){
+      _rsLog('info', '[f16-replay] replay upload start', {
+        url:u || '/api/replays',
+        timeoutMs:self.uploadTimeoutMs,
+        encoding:upload.encoding,
+        uploadBytes:_rsBodyLength(upload.body),
+        jsonBytes:_rsUtf8Length(body),
+        replay:_rsDescribeRecord(rec)
+      });
 
-    return _rsFetchJson(u, { method:'POST', body:body }, this.uploadTimeoutMs).then(function(j){
+      return _rsFetchJson(u, { method:'POST', body:upload.body, headers:upload.headers }, self.uploadTimeoutMs);
+    }).then(function(j){
       var summary = j.summary || {};
       var saved = {
         id: summary.id || j.id || rec.id,

@@ -89,6 +89,14 @@ function createApp() {
     next();
   });
 
+  app.use(express.raw({
+    type: ['application/octet-stream', 'application/gzip', 'application/x-gzip'],
+    limit: config.limits.replayUploadBytes,
+    verify: (req, res, buf) => {
+      req.rawBodyLength = buf ? buf.length : 0;
+    }
+  }));
+
   app.use(express.json({
     limit: config.limits.jsonLimit,
     strict: true,
@@ -99,9 +107,10 @@ function createApp() {
 
   app.use((err, req, res, next) => {
     if (!err || err.type !== 'entity.too.large') return next(err);
-    err.uploadStage = 'json-body-limit';
+    err.uploadStage = 'request-body-limit';
     err.uploadDiagnostics = {
       configuredJsonLimit: config.limits.jsonLimit,
+      configuredBinaryLimitBytes: config.limits.replayUploadBytes,
       contentLength: req.headers['content-length'] || '',
       rawBodyBytes: req.rawBodyLength || 0
     };
@@ -111,6 +120,7 @@ function createApp() {
       path: req.originalUrl,
       status: 413,
       configuredJsonLimit: config.limits.jsonLimit,
+      configuredBinaryLimitBytes: config.limits.replayUploadBytes,
       contentLength: req.headers['content-length'] || '',
       rawBodyBytes: req.rawBodyLength || 0
     });

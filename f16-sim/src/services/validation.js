@@ -135,9 +135,16 @@ function normalizeSubmission(body, opts = {}) {
     }
   };
 
-  const byteLength = Number(opts.rawBodyLength || 0) || Buffer.byteLength(JSON.stringify(record), 'utf8');
-  if (byteLength > config.limits.replayBytes) throw bad('Replay payload exceeds server byte limit');
-  record.client.byteLength = byteLength;
+  const expandedByteLength = Number(opts.expandedBodyLength || 0) || Buffer.byteLength(JSON.stringify(record), 'utf8');
+  const uploadByteLength = Number(opts.uploadBodyLength || opts.rawBodyLength || 0) || expandedByteLength;
+  const uploadEncoding = safeString(opts.uploadEncoding || 'json', 32);
+
+  if (uploadByteLength > config.limits.replayUploadBytes) throw bad('Replay upload exceeds server byte limit', 413);
+  if (expandedByteLength > config.limits.replayExpandedBytes) throw bad('Replay payload exceeds expanded server byte limit', 413);
+
+  record.client.byteLength = expandedByteLength;
+  record.client.uploadByteLength = uploadByteLength;
+  record.client.uploadEncoding = uploadEncoding;
   return record;
 }
 

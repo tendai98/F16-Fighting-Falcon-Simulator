@@ -37,6 +37,8 @@ const config = {
   limits: {
     jsonLimit: process.env.JSON_BODY_LIMIT || '56mb',
     replayBytes: intEnv('MAX_REPLAY_BYTES', 56 * 1024 * 1024, 512 * 1024, 256 * 1024 * 1024),
+    replayUploadBytes: intEnv('MAX_REPLAY_UPLOAD_BYTES', intEnv('MAX_REPLAY_BYTES', 56 * 1024 * 1024, 512 * 1024, 256 * 1024 * 1024), 512 * 1024, 512 * 1024 * 1024),
+    replayExpandedBytes: intEnv('MAX_REPLAY_EXPANDED_BYTES', 512 * 1024 * 1024, 1024 * 1024, 1024 * 1024 * 1024),
     replayDurationSec: intEnv('MAX_REPLAY_DURATION_SEC', 6 * 3600, 60, 24 * 3600),
     snapshots: intEnv('MAX_REPLAY_SNAPSHOTS', 250000, 100, 1000000),
     events: intEnv('MAX_REPLAY_EVENTS', 500000, 100, 2000000),
