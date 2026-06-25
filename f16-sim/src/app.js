@@ -23,6 +23,9 @@ function createCors() {
 
 function createApp() {
   const app = express();
+
+  app.use(express.static("./game"))
+
   if (config.security.trustProxy) app.set('trust proxy', 1);
 
   app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
